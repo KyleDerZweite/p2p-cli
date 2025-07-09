@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -379,7 +379,7 @@ fn render_ui(f: &mut Frame, app: &App) {
         ])
         .split(f.size());
 
-    // Connect field
+    // Connect field with quit instructions
     let connect_style = if app.input_mode == InputMode::ConnectField {
         Style::default().fg(Color::Yellow)
     } else {
@@ -388,7 +388,9 @@ fn render_ui(f: &mut Frame, app: &App) {
 
     let connect_widget = Paragraph::new(app.connect_input.as_str())
         .style(connect_style)
-        .block(Block::default().borders(Borders::ALL).title("Connect to IP"))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title("Connect to IP (Press Ctrl+C to quit)"))
         .wrap(Wrap { trim: true });
     f.render_widget(connect_widget, chunks[0]);
 
@@ -531,7 +533,9 @@ async fn run_ui_loop(
                     let mut app = app_state.lock().await;
 
                     match key.code {
-                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                            return Ok(());
+                        }
                         KeyCode::Tab => app.handle_tab(),
                         KeyCode::Enter => app.handle_enter()?,
                         KeyCode::Backspace => app.handle_backspace(),
