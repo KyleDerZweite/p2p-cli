@@ -30,7 +30,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1::{EncodeRsaPublicKey, DecodeRsaPubl
 use rand::rngs::OsRng;
 use base64::{Engine as _, engine::general_purpose};
 
-const PORT: u16 = 8080;
+const DEFAULT_PORT: u16 = 8080;
 const CONNECTION_TIMEOUT_SECS: u64 = 180;
 const MAX_MESSAGES: usize = 100;
 const BUFFER_SIZE: usize = 4096;
@@ -107,10 +107,11 @@ struct App {
 
     // Network
     network_tx: mpsc::UnboundedSender<NetworkMessage>,
+    port: u16,
 }
 
 impl App {
-    fn new(network_tx: mpsc::UnboundedSender<NetworkMessage>) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(network_tx: mpsc::UnboundedSender<NetworkMessage>, port: u16) -> Result<Self, Box<dyn std::error::Error>> {
         let mut rng = OsRng;
         let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
         let public_key = RsaPublicKey::from(&private_key);
@@ -127,6 +128,7 @@ impl App {
             messages: VecDeque::new(),
             incoming_connection: None,
             network_tx,
+            port,
         })
     }
 
@@ -182,17 +184,26 @@ impl App {
     }
 
     fn send_connection_request(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Ok(ip) = self.connect_input.parse::<std::net::IpAddr>() {
+        let target_address = if self.connect_input.contains(':') {
+            // User entered IP:port format
+            self.connect_input.clone()
+        } else {
+            // User entered just IP, use default port
+            format!("{}:{}", self.connect_input, DEFAULT_PORT)
+        };
+
+        // Validate the address format
+        if target_address.parse::<SocketAddr>().is_ok() {
             let msg = NetworkMessage {
                 id: Uuid::new_v4(),
                 msg_type: MessageType::ConnectionRequest,
-                from_ip: format!("127.0.0.1:{}", PORT),
+                from_ip: format!("127.0.0.1:{}", self.port),
                 content: "Connection request".to_string(),
                 public_key: Some(self.get_public_key_base64()?),
                 timestamp: chrono::Utc::now(),
             };
 
-            self.peer_ip = Some(format!("{}:{}", ip, PORT));
+            self.peer_ip = Some(target_address);
             self.connection_status = ConnectionStatus::Establishing;
             self.network_tx.send(msg)?;
             self.connect_input.clear();
@@ -205,7 +216,7 @@ impl App {
             let msg = NetworkMessage {
                 id: Uuid::new_v4(),
                 msg_type: MessageType::TextMessage,
-                from_ip: format!("127.0.0.1:{}", PORT),
+                from_ip: format!("127.0.0.1:{}", self.port),
                 content: self.message_input.clone(),
                 public_key: None,
                 timestamp: chrono::Utc::now(),
@@ -223,7 +234,7 @@ impl App {
             let msg = NetworkMessage {
                 id: Uuid::new_v4(),
                 msg_type: MessageType::ConnectionAccept,
-                from_ip: format!("127.0.0.1:{}", PORT),
+                from_ip: format!("127.0.0.1:{}", self.port),
                 content: "Connection accepted".to_string(),
                 public_key: Some(self.get_public_key_base64()?),
                 timestamp: chrono::Utc::now(),
@@ -246,7 +257,7 @@ impl App {
             let msg = NetworkMessage {
                 id: Uuid::new_v4(),
                 msg_type: MessageType::ConnectionDecline,
-                from_ip: format!("127.0.0.1:{}", PORT),
+                from_ip: format!("127.0.0.1:{}", self.port),
                 content: "Connection declined".to_string(),
                 public_key: None,
                 timestamp: chrono::Utc::now(),
@@ -306,11 +317,12 @@ impl App {
 async fn start_network_listener(
     app_state: Arc<Mutex<App>>,
     mut message_rx: mpsc::UnboundedReceiver<NetworkMessage>,
+    port: u16,
 ) {
     // Handle incoming connections
     let listener_state = Arc::clone(&app_state);
     tokio::spawn(async move {
-        if let Ok(listener) = TcpListener::bind(format!("0.0.0.0:{}", PORT)).await {
+        if let Ok(listener) = TcpListener::bind(format!("0.0.0.0:{}", port)).await {
             loop {
                 if let Ok((stream, addr)) = listener.accept().await {
                     let state = Arc::clone(&listener_state);
@@ -390,7 +402,7 @@ fn render_ui(f: &mut Frame, app: &App) {
         .style(connect_style)
         .block(Block::default()
             .borders(Borders::ALL)
-            .title("Connect to IP (Press Ctrl+C to quit)"))
+            .title(format!("Connect to IP:PORT (Listening on: {}) (Press Ctrl+C to quit)", app.port)))
         .wrap(Wrap { trim: true });
     f.render_widget(connect_widget, chunks[0]);
 
@@ -476,6 +488,25 @@ fn render_message_input(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 // Main function
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command line arguments
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() > 1 && (args[1] == "--help" || args[1] == "-h") {
+        println!("P2P Terminal Messenger");
+        println!("Usage: {} [PORT]", args[0]);
+        println!("  PORT: Port number to listen on (default: {})", DEFAULT_PORT);
+        println!("  --help, -h: Show this help message");
+        return Ok(());
+    }
+    
+    let port = if args.len() > 1 {
+        args[1].parse::<u16>().unwrap_or(DEFAULT_PORT)
+    } else {
+        DEFAULT_PORT
+    };
+
+    println!("Starting P2P messenger on port {}", port);
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -487,12 +518,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (network_tx, network_rx) = mpsc::unbounded_channel();
 
     // Create app state
-    let app = Arc::new(Mutex::new(App::new(network_tx)?));
+    let app = Arc::new(Mutex::new(App::new(network_tx, port)?));
 
     // Start network task
     let network_app = Arc::clone(&app);
     let network_task = tokio::spawn(async move {
-        start_network_listener(network_app, network_rx).await;
+        start_network_listener(network_app, network_rx, port).await;
     });
 
     // Run UI loop
