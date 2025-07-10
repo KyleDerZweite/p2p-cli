@@ -26,12 +26,14 @@ use tokio::{
     time::timeout,
 };
 use uuid::Uuid;
-use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1::{EncodeRsaPublicKey, DecodeRsaPublicKey}};
-use rand::rngs::OsRng;
-use base64::{Engine as _, engine::general_purpose};
+mod crypto;
+use crypto::CryptoManager;
 
 const DEFAULT_PORT: u16 = 8080;
 const CONNECTION_TIMEOUT_SECS: u64 = 180;
+const SESSION_TIMEOUT_SECS: u64 = 300; // 5 minutes of inactivity
+const PING_INTERVAL_SECS: u64 = 60; // send ping every minute
+const PING_TIMEOUT_SECS: u64 = 10; // wait 10 seconds for ping response
 const MAX_MESSAGES: usize = 100;
 const BUFFER_SIZE: usize = 4096;
 
@@ -53,6 +55,7 @@ enum MessageType {
     ConnectionDecline,
     TextMessage,
     Ping,
+    PingResponse,
 }
 
 // UI-related structures
@@ -96,10 +99,16 @@ struct App {
     connection_status: ConnectionStatus,
     peer_ip: Option<String>,
     peer_public_key: Option<String>,
+    connected_at: Option<Instant>,
+    previous_peer_ip: Option<String>,
+
+    // Session management
+    last_activity: Instant,
+    last_ping_sent: Option<Instant>,
+    pending_ping: Option<Uuid>,
 
     // Crypto
-    private_key: RsaPrivateKey,
-    public_key: RsaPublicKey,
+    crypto_manager: CryptoManager,
 
     // Messages
     messages: VecDeque<ChatMessage>,
@@ -112,9 +121,8 @@ struct App {
 
 impl App {
     fn new(network_tx: mpsc::UnboundedSender<NetworkMessage>, port: u16) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut rng = OsRng;
-        let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
-        let public_key = RsaPublicKey::from(&private_key);
+        let crypto_manager = CryptoManager::new()?;
+        let now = Instant::now();
 
         Ok(Self {
             input_mode: InputMode::ConnectField,
@@ -123,8 +131,12 @@ impl App {
             connection_status: ConnectionStatus::Online,
             peer_ip: None,
             peer_public_key: None,
-            private_key,
-            public_key,
+            connected_at: None,
+            previous_peer_ip: None,
+            last_activity: now,
+            last_ping_sent: None,
+            pending_ping: None,
+            crypto_manager,
             messages: VecDeque::new(),
             incoming_connection: None,
             network_tx,
@@ -133,8 +145,7 @@ impl App {
     }
 
     fn get_public_key_base64(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let pem = self.public_key.to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)?;
-        Ok(general_purpose::STANDARD.encode(pem.as_bytes()))
+        self.crypto_manager.get_public_key_base64()
     }
 
     fn add_message(&mut self, content: String, from_self: bool) {
@@ -213,18 +224,24 @@ impl App {
 
     fn send_message(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if !self.message_input.is_empty() && matches!(self.connection_status, ConnectionStatus::Connected) {
-            let msg = NetworkMessage {
-                id: Uuid::new_v4(),
-                msg_type: MessageType::TextMessage,
-                from_ip: format!("127.0.0.1:{}", self.port),
-                content: self.message_input.clone(),
-                public_key: None,
-                timestamp: chrono::Utc::now(),
-            };
+            if let Some(peer_public_key) = &self.peer_public_key {
+                // Encrypt the message content
+                let encrypted_content = self.crypto_manager.encrypt_message(&self.message_input, peer_public_key)?;
+                
+                let msg = NetworkMessage {
+                    id: Uuid::new_v4(),
+                    msg_type: MessageType::TextMessage,
+                    from_ip: format!("127.0.0.1:{}", self.port),
+                    content: encrypted_content,
+                    public_key: None,
+                    timestamp: chrono::Utc::now(),
+                };
 
-            self.add_message(self.message_input.clone(), true);
-            self.message_input.clear();
-            self.network_tx.send(msg)?;
+                self.add_message(self.message_input.clone(), true);
+                self.message_input.clear();
+                self.last_activity = Instant::now(); // Update activity time
+                self.network_tx.send(msg)?;
+            }
         }
         Ok(())
     }
@@ -243,6 +260,8 @@ impl App {
             self.peer_ip = Some(incoming.from_ip.clone());
             self.peer_public_key = Some(incoming.public_key.clone());
             self.connection_status = ConnectionStatus::Connected;
+            self.connected_at = Some(Instant::now());
+            self.last_activity = Instant::now();
             self.incoming_connection = None;
             self.input_mode = InputMode::MessageField;
 
@@ -286,6 +305,8 @@ impl App {
                 if let Some(public_key) = msg.public_key {
                     self.peer_public_key = Some(public_key);
                     self.connection_status = ConnectionStatus::Connected;
+                    self.connected_at = Some(Instant::now());
+                    self.last_activity = Instant::now();
                     self.add_message("Connection established!".to_string(), false);
                 }
             }
@@ -295,10 +316,40 @@ impl App {
                 self.add_message("Connection declined by peer".to_string(), false);
             }
             MessageType::TextMessage => {
-                self.add_message(msg.content, false);
+                // Decrypt the message content
+                match self.crypto_manager.decrypt_message(&msg.content) {
+                    Ok(decrypted_content) => {
+                        self.add_message(decrypted_content, false);
+                        self.last_activity = Instant::now(); // Update activity time
+                    }
+                    Err(e) => {
+                        self.add_message(format!("[Decryption error: {}]", e), false);
+                    }
+                }
             }
             MessageType::Ping => {
-                // Handle ping/keepalive if needed
+                // Respond to ping with pong
+                let ping_response = NetworkMessage {
+                    id: msg.id, // Use same ID for response
+                    msg_type: MessageType::PingResponse,
+                    from_ip: format!("127.0.0.1:{}", self.port),
+                    content: "pong".to_string(),
+                    public_key: None,
+                    timestamp: chrono::Utc::now(),
+                };
+                self.last_activity = Instant::now();
+                if let Err(_) = self.network_tx.send(ping_response) {
+                    // If we can't send ping response, connection might be broken
+                }
+            }
+            MessageType::PingResponse => {
+                // Handle ping response
+                if let Some(pending_ping_id) = self.pending_ping {
+                    if pending_ping_id == msg.id {
+                        self.pending_ping = None;
+                        self.last_activity = Instant::now();
+                    }
+                }
             }
         }
     }
@@ -310,6 +361,88 @@ impl App {
                 self.input_mode = InputMode::ConnectField;
             }
         }
+    }
+
+    fn check_session_timeout(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if !matches!(self.connection_status, ConnectionStatus::Connected) {
+            return Ok(());
+        }
+
+        let now = Instant::now();
+        let time_since_activity = now.duration_since(self.last_activity).as_secs();
+
+        // Check if session should timeout
+        if time_since_activity >= SESSION_TIMEOUT_SECS {
+            self.disconnect_with_timeout();
+            return Ok(());
+        }
+
+        // Check if we should send a ping
+        if let Some(last_ping) = self.last_ping_sent {
+            let time_since_ping = now.duration_since(last_ping).as_secs();
+            
+            // Check if ping timed out
+            if self.pending_ping.is_some() && time_since_ping >= PING_TIMEOUT_SECS {
+                self.disconnect_peer_offline();
+                return Ok(());
+            }
+        }
+
+        // Send ping if it's time
+        if self.last_ping_sent.is_none() || 
+           now.duration_since(self.last_ping_sent.unwrap()).as_secs() >= PING_INTERVAL_SECS {
+            self.send_ping()?;
+        }
+
+        Ok(())
+    }
+
+    fn send_ping(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if matches!(self.connection_status, ConnectionStatus::Connected) {
+            let ping_id = Uuid::new_v4();
+            let ping_msg = NetworkMessage {
+                id: ping_id,
+                msg_type: MessageType::Ping,
+                from_ip: format!("127.0.0.1:{}", self.port),
+                content: "ping".to_string(),
+                public_key: None,
+                timestamp: chrono::Utc::now(),
+            };
+
+            self.pending_ping = Some(ping_id);
+            self.last_ping_sent = Some(Instant::now());
+            self.network_tx.send(ping_msg)?;
+        }
+        Ok(())
+    }
+
+    fn disconnect_with_timeout(&mut self) {
+        // Store IP for easy reconnection
+        self.previous_peer_ip = self.peer_ip.clone();
+        self.reset_connection_state();
+        self.add_message("Session timed out due to inactivity".to_string(), false);
+        
+        // Put previous IP back in connect field for easy reconnection
+        if let Some(prev_ip) = &self.previous_peer_ip {
+            self.connect_input = prev_ip.clone();
+        }
+    }
+
+    fn disconnect_peer_offline(&mut self) {
+        self.reset_connection_state();
+        self.add_message("Peer went offline".to_string(), false);
+        // Don't store IP for reconnection in this case
+    }
+
+    fn reset_connection_state(&mut self) {
+        self.connection_status = ConnectionStatus::Online;
+        self.peer_ip = None;
+        self.peer_public_key = None;
+        self.connected_at = None;
+        self.last_activity = Instant::now();
+        self.last_ping_sent = None;
+        self.pending_ping = None;
+        self.input_mode = InputMode::ConnectField;
     }
 }
 
@@ -417,23 +550,70 @@ fn render_ui(f: &mut Frame, app: &App) {
 }
 
 fn render_incoming_connection(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let (block, text) = if let Some(incoming) = &app.incoming_connection {
+    let mut text_lines = Vec::new();
+    let mut title = String::new();
+    let mut style = Style::default();
+
+    // Show current connection if connected
+    if let Some(peer_ip) = &app.peer_ip {
+        if let Some(connected_at) = app.connected_at {
+            let connection_duration = Instant::now().duration_since(connected_at);
+            let mins = connection_duration.as_secs() / 60;
+            let secs = connection_duration.as_secs() % 60;
+            
+            title = format!("Connected to {} ({}m {}s)", peer_ip, mins, secs);
+            style = Style::default().fg(Color::Blue);
+            
+            // Show session timeout countdown
+            let time_since_activity = Instant::now().duration_since(app.last_activity).as_secs();
+            let time_remaining = SESSION_TIMEOUT_SECS.saturating_sub(time_since_activity);
+            let timeout_mins = time_remaining / 60;
+            let timeout_secs = time_remaining % 60;
+            
+            if time_remaining > 0 {
+                text_lines.push(format!("Session expires in {}m {}s", timeout_mins, timeout_secs));
+            } else {
+                text_lines.push("Session expiring...".to_string());
+            }
+            
+            // Show ping status
+            if let Some(last_ping) = app.last_ping_sent {
+                let ping_age = Instant::now().duration_since(last_ping).as_secs();
+                if app.pending_ping.is_some() {
+                    text_lines.push(format!("Ping sent {}s ago (waiting for response)", ping_age));
+                } else {
+                    text_lines.push(format!("Last ping: {}s ago", ping_age));
+                }
+            }
+        }
+    }
+
+    // Show incoming connection if there is one
+    if let Some(incoming) = &app.incoming_connection {
         let remaining = (incoming.expires_at - Instant::now()).as_secs();
-        (
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Incoming from {} ({}s)", incoming.from_ip, remaining))
-                .style(Style::default().fg(Color::Green)),
-            "Press 'a' to accept, 'd' to decline"
-        )
-    } else {
-        (
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Incoming connections"),
-            "No incoming connections"
-        )
-    };
+        if !text_lines.is_empty() {
+            text_lines.push("".to_string()); // Empty line separator
+        }
+        text_lines.push(format!("Incoming from {} ({}s remaining)", incoming.from_ip, remaining));
+        text_lines.push("Press 'a' to accept, 'd' to decline".to_string());
+        
+        if title.is_empty() {
+            title = "Incoming Connection".to_string();
+            style = Style::default().fg(Color::Green);
+        }
+    }
+
+    // Default state
+    if title.is_empty() {
+        title = "Connection Status".to_string();
+        text_lines.push("No active connection".to_string());
+    }
+
+    let text = text_lines.join("\n");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(style);
 
     let widget = Paragraph::new(text).block(block).wrap(Wrap { trim: true });
     f.render_widget(widget, area);
@@ -465,7 +645,7 @@ fn render_message_input(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let (status_text, status_color) = match app.connection_status {
         ConnectionStatus::Online => ("Online", Color::Green),
         ConnectionStatus::Establishing => ("Establishing...", Color::Yellow),
-        ConnectionStatus::Connected => ("Connected", Color::Blue),
+        ConnectionStatus::Connected => ("Connected [Encrypted]", Color::Blue),
         ConnectionStatus::Disconnected => ("Disconnected", Color::Red),
     };
 
@@ -587,6 +767,9 @@ async fn run_ui_loop(
         {
             let mut app = app_state.lock().await;
             app.check_timeout();
+            if let Err(_) = app.check_session_timeout() {
+                // Handle session timeout error if needed
+            }
         }
     }
 }
