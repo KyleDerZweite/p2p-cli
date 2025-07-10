@@ -1,5 +1,5 @@
 /// Security levels available in the application
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityLevel {
     Quick = 0,     // Current behavior - no identity verification
     Tofu = 1,      // Trust on first use - verify peer identity
@@ -68,6 +68,17 @@ impl SecurityLevel {
         match self {
             SecurityLevel::Quick | SecurityLevel::Tofu | SecurityLevel::Secure => false,
             SecurityLevel::Maximum => true,
+        }
+    }
+
+    /// Negotiate security level with peer (use the higher level)
+    pub fn negotiate_with(self, peer_level: SecurityLevel) -> SecurityLevel {
+        match (self as u8).max(peer_level as u8) {
+            0 => SecurityLevel::Quick,
+            1 => SecurityLevel::Tofu,
+            2 => SecurityLevel::Secure,
+            3 => SecurityLevel::Maximum,
+            _ => SecurityLevel::Quick,
         }
     }
 }

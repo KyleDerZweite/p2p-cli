@@ -31,6 +31,8 @@ pub enum UiEvent {
     DeclineConnection,
     CharInput(char),
     Resize(u16, u16),
+    SecurityLevelSelect(SecurityLevel),
+    ShowSecuritySelection,
 }
 
 /// Current state of the UI inputs and display
@@ -41,6 +43,8 @@ pub struct UiState {
     pub message_input: String,
     pub connection_status: ConnectionStatus,
     pub security_level: SecurityLevel,
+    pub peer_security_level: Option<SecurityLevel>,
+    pub negotiated_security_level: Option<SecurityLevel>,
     pub peer_ip: Option<String>,
     pub connected_at: Option<Instant>,
     pub last_activity: Instant,
@@ -49,6 +53,7 @@ pub struct UiState {
     pub messages: Vec<ChatMessage>,
     pub incoming_connection: Option<IncomingConnection>,
     pub port: u16,
+    pub show_security_selection: bool,
 }
 
 /// Input modes for the terminal interface
@@ -57,6 +62,7 @@ pub enum InputMode {
     ConnectField,
     MessageField,
     IncomingResponse,
+    SecuritySelection,
 }
 
 /// Connection status for UI display
@@ -84,6 +90,7 @@ pub struct ChatMessage {
 pub struct IncomingConnection {
     pub from_ip: String,
     pub public_key: String,
+    pub security_level: SecurityLevel,
     pub expires_at: Instant,
 }
 

@@ -16,6 +16,8 @@ pub struct AppState {
     pub connection_status: ConnectionStatus,
     pub peer_ip: Option<String>,
     pub peer_public_key: Option<String>,
+    pub peer_security_level: Option<super::SecurityLevel>,
+    pub negotiated_security_level: Option<super::SecurityLevel>,
     pub connected_at: Option<Instant>,
     pub previous_peer_ip: Option<String>,
 
@@ -34,6 +36,7 @@ pub struct AppState {
     // Application control
     pub should_quit: bool,
     pub port: u16,
+    pub show_security_selection: bool,
 }
 
 impl AppState {
@@ -48,6 +51,8 @@ impl AppState {
             connection_status: ConnectionStatus::Online,
             peer_ip: None,
             peer_public_key: None,
+            peer_security_level: None,
+            negotiated_security_level: None,
             connected_at: None,
             previous_peer_ip: None,
             last_activity: now,
@@ -58,6 +63,7 @@ impl AppState {
             incoming_connection: None,
             should_quit: false,
             port,
+            show_security_selection: false,
         }
     }
 
@@ -66,6 +72,8 @@ impl AppState {
         self.connection_status = ConnectionStatus::Online;
         self.peer_ip = None;
         self.peer_public_key = None;
+        self.peer_security_level = None;
+        self.negotiated_security_level = None;
         self.current_peer_id = None;
         self.connected_at = None;
         self.last_activity = Instant::now();

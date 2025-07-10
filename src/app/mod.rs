@@ -67,6 +67,21 @@ impl App {
                 self.state.should_quit = true;
                 self.send_disconnect_notification()
             }
+            UiEvent::ShowSecuritySelection => {
+                self.state.show_security_selection = true;
+                Ok(None)
+            }
+            UiEvent::SecurityLevelSelect(level) => {
+                self.config.security_level = level;
+                self.state.show_security_selection = false;
+                Ok(None)
+            }
+            UiEvent::KeyPress(crossterm::event::KeyCode::Esc, _) => {
+                if self.state.show_security_selection {
+                    self.state.show_security_selection = false;
+                }
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }
@@ -100,6 +115,8 @@ impl App {
             message_input: self.state.message_input.clone(),
             connection_status: self.state.connection_status.clone(),
             security_level: self.config.security_level,
+            peer_security_level: self.state.peer_security_level,
+            negotiated_security_level: self.state.negotiated_security_level,
             peer_ip: self.state.peer_ip.clone(),
             connected_at: self.state.connected_at,
             last_activity: self.state.last_activity,
@@ -108,6 +125,7 @@ impl App {
             messages: self.state.messages.clone().into(),
             incoming_connection: self.state.incoming_connection.clone(),
             port: self.config.port,
+            show_security_selection: self.state.show_security_selection,
         }
     }
 
@@ -137,6 +155,7 @@ impl App {
             InputMode::ConnectField => InputMode::MessageField,
             InputMode::MessageField => InputMode::ConnectField,
             InputMode::IncomingResponse => InputMode::IncomingResponse,
+            InputMode::SecuritySelection => InputMode::SecuritySelection,
         };
     }
 
@@ -145,6 +164,7 @@ impl App {
             InputMode::ConnectField => self.state.connect_input.push(c),
             InputMode::MessageField => self.state.message_input.push(c),
             InputMode::IncomingResponse => {}
+            InputMode::SecuritySelection => {}
         }
     }
 
@@ -153,6 +173,7 @@ impl App {
             InputMode::ConnectField => { self.state.connect_input.pop(); }
             InputMode::MessageField => { self.state.message_input.pop(); }
             InputMode::IncomingResponse => {}
+            InputMode::SecuritySelection => {}
         }
     }
 
@@ -161,6 +182,7 @@ impl App {
             InputMode::ConnectField => self.send_connection_request(),
             InputMode::MessageField => self.send_message(),
             InputMode::IncomingResponse => Ok(None),
+            InputMode::SecuritySelection => Ok(None),
         }
     }
 
@@ -175,6 +197,7 @@ impl App {
             let msg = NetworkMessage::connection_request(
                 format!("127.0.0.1:{}", self.config.port),
                 self.get_public_key_base64()?,
+                self.config.security_level,
             );
 
             self.state.peer_ip = Some(target_address);
@@ -216,9 +239,13 @@ impl App {
 
     fn accept_connection(&mut self) -> Result<Option<NetworkMessage>, Box<dyn std::error::Error>> {
         if let Some(incoming) = self.state.incoming_connection.clone() {
+            // Negotiate security level (use the higher level)
+            let negotiated_level = self.config.security_level.negotiate_with(incoming.security_level);
+            
             let msg = NetworkMessage::connection_accept(
                 format!("127.0.0.1:{}", self.config.port),
                 self.get_public_key_base64()?,
+                self.config.security_level,
             );
 
             // Store/update peer in database
@@ -228,6 +255,8 @@ impl App {
             
             self.state.peer_ip = Some(incoming.from_ip.clone());
             self.state.peer_public_key = Some(incoming.public_key.clone());
+            self.state.peer_security_level = Some(incoming.security_level);
+            self.state.negotiated_security_level = Some(negotiated_level);
             self.state.connection_status = ConnectionStatus::Connected;
             self.state.connected_at = Some(Instant::now());
             self.state.last_activity = Instant::now();
@@ -235,7 +264,7 @@ impl App {
             self.state.input_mode = InputMode::MessageField;
             
             self.reload_current_peer_history();
-            self.add_message("Connection established!".to_string(), false);
+            self.add_message(format!("Connection established! Security level: {}", negotiated_level.display_name()), false);
             
             return Ok(Some(msg));
         }
@@ -270,9 +299,11 @@ impl App {
         match msg.msg_type {
             MessageType::ConnectionRequest => {
                 if let Some(public_key) = msg.public_key {
+                    let peer_security_level = msg.security_level.unwrap_or(SecurityLevel::Quick);
                     self.state.incoming_connection = Some(IncomingConnection {
                         from_ip: msg.from_ip,
                         public_key,
+                        security_level: peer_security_level,
                         expires_at: Instant::now() + std::time::Duration::from_secs(180),
                     });
                     self.state.input_mode = InputMode::IncomingResponse;
@@ -280,17 +311,22 @@ impl App {
             }
             MessageType::ConnectionAccept => {
                 if let Some(public_key) = msg.public_key {
+                    let peer_security_level = msg.security_level.unwrap_or(SecurityLevel::Quick);
+                    let negotiated_level = self.config.security_level.negotiate_with(peer_security_level);
+                    
                     if let Ok(peer_id) = self.message_db.get_or_create_peer(&public_key, &msg.from_ip) {
                         self.state.current_peer_id = Some(peer_id.clone());
                     }
                     
                     self.state.peer_public_key = Some(public_key);
+                    self.state.peer_security_level = Some(peer_security_level);
+                    self.state.negotiated_security_level = Some(negotiated_level);
                     self.state.connection_status = ConnectionStatus::Connected;
                     self.state.connected_at = Some(Instant::now());
                     self.state.last_activity = Instant::now();
                     
                     self.reload_current_peer_history();
-                    self.add_message("Connection established!".to_string(), false);
+                    self.add_message(format!("Connection established! Security level: {}", negotiated_level.display_name()), false);
                 }
             }
             MessageType::ConnectionDecline => {
@@ -444,6 +480,8 @@ impl App {
         self.state.connection_status = ConnectionStatus::Online;
         self.state.peer_ip = None;
         self.state.peer_public_key = None;
+        self.state.peer_security_level = None;
+        self.state.negotiated_security_level = None;
         self.state.current_peer_id = None;
         self.state.connected_at = None;
         self.state.last_activity = Instant::now();

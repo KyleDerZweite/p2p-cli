@@ -33,6 +33,11 @@ impl Renderer {
         self.render_connection_info(frame, chunks[1], state);
         self.render_messages(frame, chunks[2], state);
         self.render_message_input(frame, chunks[3], state);
+        
+        // Render security selection overlay if needed
+        if state.show_security_selection {
+            self.render_security_selection(frame, state);
+        }
     }
 
     /// Render the connection input field with security level indicator
@@ -43,14 +48,20 @@ impl Renderer {
             Style::default()
         };
 
-        let security_indicator = if state.security_level != SecurityLevel::Quick {
+        let security_indicator = if let Some(negotiated_level) = state.negotiated_security_level {
+            if negotiated_level != SecurityLevel::Quick {
+                format!(" [{}]", negotiated_level.display_name())
+            } else {
+                String::new()
+            }
+        } else if state.security_level != SecurityLevel::Quick {
             format!(" [{}]", state.security_level.display_name())
         } else {
             String::new()
         };
 
         let title = format!(
-            "Connect to IP:PORT (Listening on: {}){} (Ctrl+C=quit, Ctrl+D=disconnect)",
+            "Connect to IP:PORT (Listening on: {}){} (Ctrl+C=quit, Ctrl+D=disconnect, S=security)",
             state.port,
             security_indicator
         );
@@ -91,6 +102,18 @@ impl Renderer {
                     text_lines.push("Session expiring...".to_string());
                 }
                 
+                // Show security level info
+                if let Some(negotiated_level) = state.negotiated_security_level {
+                    if let Some(peer_level) = state.peer_security_level {
+                        text_lines.push(format!("Security: {} (You: {}, Peer: {})", 
+                            negotiated_level.display_name(), 
+                            state.security_level.display_name(),
+                            peer_level.display_name()));
+                    } else {
+                        text_lines.push(format!("Security: {}", negotiated_level.display_name()));
+                    }
+                }
+                
                 // Show ping status
                 if let Some(last_ping) = state.last_ping_sent {
                     let ping_age = Instant::now().duration_since(last_ping).as_secs();
@@ -110,6 +133,9 @@ impl Renderer {
                 text_lines.push("".to_string()); // Empty line separator
             }
             text_lines.push(format!("Incoming from {} ({}s remaining)", incoming.from_ip, remaining));
+            text_lines.push(format!("Peer Security: {} → Negotiated: {}", 
+                incoming.security_level.display_name(),
+                state.security_level.negotiate_with(incoming.security_level).display_name()));
             text_lines.push("Press 'a' to accept, 'd' to decline".to_string());
             
             if title.is_empty() {
@@ -171,9 +197,13 @@ impl Renderer {
             ConnectionStatus::Online => ("Online", Color::Green),
             ConnectionStatus::Establishing => ("Establishing...", Color::Yellow),
             ConnectionStatus::Connected => {
-                match state.security_level {
-                    SecurityLevel::Quick => ("Connected [Encrypted]", Color::Blue),
-                    _ => ("Connected [Encrypted + Verified]", Color::Blue),
+                if let Some(negotiated_level) = state.negotiated_security_level {
+                    match negotiated_level {
+                        SecurityLevel::Quick => ("Connected [Encrypted]", Color::Blue),
+                        _ => ("Connected [Encrypted + Verified]", Color::Blue),
+                    }
+                } else {
+                    ("Connected [Encrypted]", Color::Blue)
                 }
             },
             ConnectionStatus::Disconnected => ("Disconnected", Color::Red),
@@ -194,5 +224,64 @@ impl Renderer {
             .wrap(Wrap { trim: true });
         
         frame.render_widget(widget, area);
+    }
+
+    /// Render the security level selection overlay
+    fn render_security_selection(&self, frame: &mut Frame, state: &UiState) {
+        use ratatui::widgets::Clear;
+        
+        let area = frame.size();
+        let popup_area = ratatui::layout::Rect {
+            x: area.width / 4,
+            y: area.height / 4,
+            width: area.width / 2,
+            height: area.height / 2,
+        };
+
+        // Clear the area behind the popup
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Security Level Selection")
+            .style(Style::default().bg(Color::Blue));
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("Current: ", Style::default().fg(Color::White)),
+                Span::styled(state.security_level.display_name(), Style::default().fg(Color::Yellow)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("F1/0: ", Style::default().fg(Color::Green)),
+                Span::styled("Quick Mode", Style::default().fg(Color::White)),
+                Span::styled(" - No verification", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled("F2/1: ", Style::default().fg(Color::Green)),
+                Span::styled("TOFU Mode", Style::default().fg(Color::White)),
+                Span::styled(" - Trust on first use", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled("F3/2: ", Style::default().fg(Color::Green)),
+                Span::styled("Secure Mode", Style::default().fg(Color::White)),
+                Span::styled(" - Signatures + rotation", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled("F4/3: ", Style::default().fg(Color::Green)),
+                Span::styled("Maximum Security", Style::default().fg(Color::White)),
+                Span::styled(" - No persistent history", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Press ESC to close", Style::default().fg(Color::DarkGray)),
+            ]),
+        ];
+
+        let widget = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: true });
+
+        frame.render_widget(widget, popup_area);
     }
 }

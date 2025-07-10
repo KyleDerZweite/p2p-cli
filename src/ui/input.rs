@@ -40,6 +40,8 @@ impl InputHandler {
 
     /// Convert crossterm key events to UI events
     fn convert_key_event(&self, key_code: KeyCode, modifiers: KeyModifiers) -> Option<UiEvent> {
+        use crate::app::SecurityLevel;
+        
         match key_code {
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(UiEvent::Quit)
@@ -52,6 +54,16 @@ impl InputHandler {
             KeyCode::Backspace => Some(UiEvent::Backspace),
             KeyCode::Char('a') => Some(UiEvent::AcceptConnection),
             KeyCode::Char('d') => Some(UiEvent::DeclineConnection),
+            KeyCode::Char('s') => Some(UiEvent::ShowSecuritySelection),
+            KeyCode::F(1) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Quick)),
+            KeyCode::F(2) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Tofu)),
+            KeyCode::F(3) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Secure)),
+            KeyCode::F(4) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Maximum)),
+            KeyCode::Char('0') => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Quick)),
+            KeyCode::Char('1') => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Tofu)),
+            KeyCode::Char('2') => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Secure)),
+            KeyCode::Char('3') => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Maximum)),
+            KeyCode::Esc => Some(UiEvent::KeyPress(key_code, modifiers)),
             KeyCode::Char(c) => Some(UiEvent::CharInput(c)),
             _ => Some(UiEvent::KeyPress(key_code, modifiers)),
         }

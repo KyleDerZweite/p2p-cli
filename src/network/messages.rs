@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use crate::app::SecurityLevel;
 
 /// Network message types that can be sent between peers
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,6 +10,7 @@ pub struct NetworkMessage {
     pub from_ip: String,
     pub content: String,
     pub public_key: Option<String>,
+    pub security_level: Option<SecurityLevel>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
@@ -35,6 +37,7 @@ impl NetworkMessage {
         from_ip: String,
         content: String,
         public_key: Option<String>,
+        security_level: Option<SecurityLevel>,
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -42,27 +45,30 @@ impl NetworkMessage {
             from_ip,
             content,
             public_key,
+            security_level,
             timestamp: chrono::Utc::now(),
         }
     }
 
     /// Create a connection request message
-    pub fn connection_request(from_ip: String, public_key: String) -> Self {
+    pub fn connection_request(from_ip: String, public_key: String, security_level: SecurityLevel) -> Self {
         Self::new(
             MessageType::ConnectionRequest,
             from_ip,
             "Connection request".to_string(),
             Some(public_key),
+            Some(security_level),
         )
     }
 
     /// Create a connection accept message
-    pub fn connection_accept(from_ip: String, public_key: String) -> Self {
+    pub fn connection_accept(from_ip: String, public_key: String, security_level: SecurityLevel) -> Self {
         Self::new(
             MessageType::ConnectionAccept,
             from_ip,
             "Connection accepted".to_string(),
             Some(public_key),
+            Some(security_level),
         )
     }
 
@@ -72,6 +78,7 @@ impl NetworkMessage {
             MessageType::ConnectionDecline,
             from_ip,
             "Connection declined".to_string(),
+            None,
             None,
         )
     }
@@ -83,6 +90,7 @@ impl NetworkMessage {
             from_ip,
             "Peer disconnected".to_string(),
             None,
+            None,
         )
     }
 
@@ -92,6 +100,7 @@ impl NetworkMessage {
             MessageType::TextMessage,
             from_ip,
             content,
+            None,
             None,
         )
     }
@@ -103,6 +112,7 @@ impl NetworkMessage {
             from_ip,
             "ping".to_string(),
             None,
+            None,
         )
     }
 
@@ -112,6 +122,7 @@ impl NetworkMessage {
             MessageType::PingResponse,
             from_ip,
             "pong".to_string(),
+            None,
             None,
         );
         msg.id = ping_id; // Use the same ID as the ping for correlation
