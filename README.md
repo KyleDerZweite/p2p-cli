@@ -1,39 +1,32 @@
-# P2P CLI - TUI Messenger
+# P2P CLI
 
 ![Rust](https://github.com/KyleDerZweite/p2p-cli/workflows/Rust/badge.svg)
 
 ![P2P TUI](public/p2p-tui.png)
 
-A terminal-based peer-to-peer messenger with proper connection flow and basic cryptography.
+A terminal-based peer-to-peer messenger with hybrid encryption and persistent message history.
 
 ## Features
 
-- **Clean TUI interface** with three main sections
-- **Connection establishment** with public key exchange
-- **180-second timeout** for incoming connection requests
-- **Real-time messaging** with connection status
-- **Basic RSA encryption** ready for E2EE
-- **Message history** with sender identification
+- Terminal user interface with real-time messaging
+- Hybrid RSA/AES encryption for secure communication
+- Persistent message history with SQLite
+- Connection timeout handling and graceful disconnection
+- Cross-platform support
 
 ## Usage
 
-1. Start the application: `cargo run`
-2. Use Tab to switch between fields
-3. Enter peer IP and press Enter to connect
-4. Accept/decline incoming connections with 'a'/'d'
-5. Send messages when connected
-6. Press 'ctrl+c' to quit
+```bash
+cargo run [-- --port <PORT>]
+```
 
-## Connection Flow
+- Use Tab to navigate between fields
+- Enter peer IP and press Enter to connect
+- Accept/decline connections with 'a'/'d'
+- Press Ctrl+C to quit
 
-1. **Connect to**: Enter IP → sends connection request with public key
-2. **Incoming**: Shows request with accept/decline options (180s timeout)
-3. **Handshake**: Keys exchanged, connection established
-4. **Messaging**: Real-time encrypted communication
+## Build
 
-## Status Indicators
-
-- **Online**: Ready to connect
-- **Establishing**: Waiting for response
-- **Connected**: Ready to message
-- **Disconnected**: Connection lost
+```bash
+cargo build --release
+```
