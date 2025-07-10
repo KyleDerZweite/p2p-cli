@@ -20,7 +20,7 @@ A terminal-based peer-to-peer messenger with proper connection flow and basic cr
 3. Enter peer IP and press Enter to connect
 4. Accept/decline incoming connections with 'a'/'d'
 5. Send messages when connected
-6. Press 'q' to quit
+6. Press 'ctrl+c' to quit
 
 ## Connection Flow
 
@@ -35,10 +35,3 @@ A terminal-based peer-to-peer messenger with proper connection flow and basic cr
 - **Establishing**: Waiting for response
 - **Connected**: Ready to message
 - **Disconnected**: Connection lost
-
-## Next Steps
-
-- Implement actual message encryption with exchanged keys
-- Add persistent message history
-- Network discovery for LAN peers
-- Group messaging support
