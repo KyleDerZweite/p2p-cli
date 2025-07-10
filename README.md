@@ -23,6 +23,7 @@ cargo run [-- --port <PORT>]
 - Use Tab to navigate between fields
 - Enter peer IP and press Enter to connect
 - Accept/decline connections with 'a'/'d'
+- Press Ctrl+D to disconnect from session
 - Press Ctrl+C to quit
 
 ## Build
