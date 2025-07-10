@@ -4,6 +4,8 @@
 
 ![P2P TUI](public/p2p-tui.png)
 
+![Security Selection](public/p2p-tui-security-select.png)
+
 A terminal-based peer-to-peer messenger with hybrid encryption and persistent message history.
 
 ## Features
@@ -30,7 +32,7 @@ cargo run [-- <PORT>]
 **Controls:**
 - Tab: Navigate between fields
 - Enter: Connect to peer / Send message
-- S: Open security level selection
+- Ctrl+S: Open security level selection
 - F1-F4 / 0-3: Select security level
 - a/d: Accept/decline connections
 - Ctrl+D: Disconnect

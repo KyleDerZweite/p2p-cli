@@ -61,7 +61,7 @@ impl Renderer {
         };
 
         let title = format!(
-            "Connect to IP:PORT (Listening on: {}){} (Ctrl+C=quit, Ctrl+D=disconnect, S=security)",
+            "Connect to IP:PORT (Listening on: {}){} (Ctrl+C=quit, Ctrl+D=disconnect, Ctrl+S=security)",
             state.port,
             security_indicator
         );

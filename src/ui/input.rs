@@ -49,12 +49,14 @@ impl InputHandler {
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(UiEvent::Disconnect)
             }
+            KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(UiEvent::ShowSecuritySelection)
+            }
             KeyCode::Tab => Some(UiEvent::Tab),
             KeyCode::Enter => Some(UiEvent::Enter),
             KeyCode::Backspace => Some(UiEvent::Backspace),
             KeyCode::Char('a') => Some(UiEvent::AcceptConnection),
             KeyCode::Char('d') => Some(UiEvent::DeclineConnection),
-            KeyCode::Char('s') => Some(UiEvent::ShowSecuritySelection),
             KeyCode::F(1) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Quick)),
             KeyCode::F(2) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Tofu)),
             KeyCode::F(3) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Secure)),
