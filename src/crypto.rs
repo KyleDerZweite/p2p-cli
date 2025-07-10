@@ -6,22 +6,62 @@ use rsa::{
     Pkcs1v15Encrypt,
     traits::PublicKeyParts,
 };
+use aes_gcm::{
+    aead::{Aead, AeadCore, KeyInit, OsRng as AesRng},
+    Aes256Gcm, Key, Nonce,
+};
+use std::env;
 
 pub struct CryptoManager {
     private_key: RsaPrivateKey,
     public_key: RsaPublicKey,
+    storage_cipher: Aes256Gcm,
 }
 
 impl CryptoManager {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        // Load .env file if it exists
+        dotenv::dotenv().ok();
+        
+        // Generate ephemeral RSA keys for this session
         let mut rng = OsRng;
         let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
         let public_key = RsaPublicKey::from(&private_key);
         
+        // Get or generate storage key from environment
+        let storage_key = Self::get_or_create_storage_key()?;
+        let storage_cipher = Aes256Gcm::new(&storage_key);
+        
         Ok(Self {
             private_key,
             public_key,
+            storage_cipher,
         })
+    }
+    
+    fn get_or_create_storage_key() -> Result<Key<Aes256Gcm>, Box<dyn std::error::Error>> {
+        match env::var("DB_KEY") {
+            Ok(key_hex) => {
+                // Decode existing key from hex
+                let key_bytes = hex::decode(key_hex)?;
+                if key_bytes.len() != 32 {
+                    return Err("DB_KEY must be 32 bytes (64 hex chars)".into());
+                }
+                Ok(*Key::<Aes256Gcm>::from_slice(&key_bytes))
+            }
+            Err(_) => {
+                // Generate new key and save to .env
+                let key = Aes256Gcm::generate_key(&mut AesRng);
+                let key_hex = hex::encode(&key);
+                
+                // Create or append to .env file
+                let env_content = format!("DB_KEY={}\n", key_hex);
+                std::fs::write(".env", env_content)?;
+                
+                eprintln!("Generated new storage key in .env file");
+                Ok(key)
+            }
+        }
     }
 
     pub fn get_public_key_base64(&self) -> Result<String, Box<dyn std::error::Error>> {
@@ -63,6 +103,33 @@ impl CryptoManager {
         }
         
         Ok(String::from_utf8(decrypted_message)?)
+    }
+
+    // Storage encryption (AES-256-GCM with local key)
+    pub fn encrypt_for_storage(&self, plaintext: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let nonce = Aes256Gcm::generate_nonce(&mut AesRng);
+        let ciphertext = self.storage_cipher.encrypt(&nonce, plaintext.as_bytes())
+            .map_err(|e| format!("AES encryption failed: {}", e))?;
+        
+        // Combine nonce + ciphertext and encode as base64
+        let mut combined = nonce.to_vec();
+        combined.extend_from_slice(&ciphertext);
+        Ok(general_purpose::STANDARD.encode(&combined))
+    }
+
+    pub fn decrypt_from_storage(&self, encrypted_data: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let combined = general_purpose::STANDARD.decode(encrypted_data)?;
+        
+        if combined.len() < 12 {
+            return Err("Invalid encrypted data length".into());
+        }
+        
+        let (nonce_bytes, ciphertext) = combined.split_at(12);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        
+        let plaintext_bytes = self.storage_cipher.decrypt(nonce, ciphertext)
+            .map_err(|e| format!("AES decryption failed: {}", e))?;
+        Ok(String::from_utf8(plaintext_bytes)?)
     }
 
     pub fn get_private_key(&self) -> &RsaPrivateKey {

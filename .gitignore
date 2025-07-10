@@ -1,2 +1,5 @@
 /target
 /.idea
+/.c*
+messages.db
+.env

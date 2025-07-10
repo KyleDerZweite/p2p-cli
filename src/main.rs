@@ -23,11 +23,13 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{mpsc, Mutex},
-    time::timeout,
+    time::{timeout, sleep, Duration as TokioDuration},
 };
 use uuid::Uuid;
 mod crypto;
+mod messagedb;
 use crypto::CryptoManager;
+use messagedb::{MessageDB, StoredMessage};
 
 const DEFAULT_PORT: u16 = 8080;
 const CONNECTION_TIMEOUT_SECS: u64 = 180;
@@ -53,6 +55,7 @@ enum MessageType {
     ConnectionRequest,
     ConnectionAccept,
     ConnectionDecline,
+    Disconnect,
     TextMessage,
     Ping,
     PingResponse,
@@ -78,7 +81,7 @@ enum ConnectionStatus {
 struct ChatMessage {
     content: String,
     from_self: bool,
-    timestamp: chrono::DateTime<chrono::Utc>,
+    timestamp: String,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +113,10 @@ struct App {
     // Crypto
     crypto_manager: CryptoManager,
 
+    // Database
+    message_db: MessageDB,
+    current_peer_id: Option<String>,
+
     // Messages
     messages: VecDeque<ChatMessage>,
     incoming_connection: Option<IncomingConnection>,
@@ -122,6 +129,7 @@ struct App {
 impl App {
     fn new(network_tx: mpsc::UnboundedSender<NetworkMessage>, port: u16) -> Result<Self, Box<dyn std::error::Error>> {
         let crypto_manager = CryptoManager::new()?;
+        let message_db = MessageDB::new("messages.db")?;
         let now = Instant::now();
 
         Ok(Self {
@@ -137,6 +145,8 @@ impl App {
             last_ping_sent: None,
             pending_ping: None,
             crypto_manager,
+            message_db,
+            current_peer_id: None,
             messages: VecDeque::new(),
             incoming_connection: None,
             network_tx,
@@ -148,11 +158,52 @@ impl App {
         self.crypto_manager.get_public_key_base64()
     }
 
+    fn load_history_into_ui(&mut self, history: Vec<StoredMessage>) {
+        // Clear existing messages
+        self.messages.clear();
+        
+        // Load stored messages into UI
+        for stored_msg in history {
+            // Try to decrypt the message from storage
+            match self.crypto_manager.decrypt_from_storage(&stored_msg.content) {
+                Ok(decrypted_content) => {
+                    self.messages.push_back(ChatMessage {
+                        content: decrypted_content,
+                        from_self: stored_msg.is_outgoing,
+                        timestamp: stored_msg.timestamp.clone(),
+                    });
+                }
+                Err(_) => {
+                    // If decryption fails, show as encrypted message
+                    self.messages.push_back(ChatMessage {
+                        content: "[Encrypted message - storage decryption failed]".to_string(),
+                        from_self: stored_msg.is_outgoing,
+                        timestamp: stored_msg.timestamp.clone(),
+                    });
+                }
+            }
+        }
+        
+        // Limit messages displayed
+        while self.messages.len() > MAX_MESSAGES {
+            self.messages.pop_front();
+        }
+    }
+
+    fn reload_current_peer_history(&mut self) {
+        if let Some(peer_id) = &self.current_peer_id {
+            if let Ok(history) = self.message_db.load_history(peer_id) {
+                self.load_history_into_ui(history);
+            }
+        }
+    }
+
     fn add_message(&mut self, content: String, from_self: bool) {
+        let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.messages.push_back(ChatMessage {
             content,
             from_self,
-            timestamp: chrono::Utc::now(),
+            timestamp,
         });
 
         // Keep only last MAX_MESSAGES
@@ -228,6 +279,13 @@ impl App {
                 // Encrypt the message content
                 let encrypted_content = self.crypto_manager.encrypt_message(&self.message_input, peer_public_key)?;
                 
+                // Store message encrypted with local storage key
+                if let Some(peer_id) = &self.current_peer_id {
+                    if let Ok(storage_encrypted) = self.crypto_manager.encrypt_for_storage(&self.message_input) {
+                        let _ = self.message_db.store_message(peer_id, &storage_encrypted, true);
+                    }
+                }
+                
                 let msg = NetworkMessage {
                     id: Uuid::new_v4(),
                     msg_type: MessageType::TextMessage,
@@ -236,7 +294,7 @@ impl App {
                     public_key: None,
                     timestamp: chrono::Utc::now(),
                 };
-
+                
                 self.add_message(self.message_input.clone(), true);
                 self.message_input.clear();
                 self.last_activity = Instant::now(); // Update activity time
@@ -247,7 +305,7 @@ impl App {
     }
 
     fn accept_connection(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(incoming) = &self.incoming_connection {
+        if let Some(incoming) = self.incoming_connection.clone() {
             let msg = NetworkMessage {
                 id: Uuid::new_v4(),
                 msg_type: MessageType::ConnectionAccept,
@@ -257,6 +315,11 @@ impl App {
                 timestamp: chrono::Utc::now(),
             };
 
+            // Store/update peer in database
+            if let Ok(peer_id) = self.message_db.get_or_create_peer(&incoming.public_key, &incoming.from_ip) {
+                self.current_peer_id = Some(peer_id.clone());
+            }
+            
             self.peer_ip = Some(incoming.from_ip.clone());
             self.peer_public_key = Some(incoming.public_key.clone());
             self.connection_status = ConnectionStatus::Connected;
@@ -264,6 +327,9 @@ impl App {
             self.last_activity = Instant::now();
             self.incoming_connection = None;
             self.input_mode = InputMode::MessageField;
+            
+            // Always reload complete message history from database
+            self.reload_current_peer_history();
 
             self.network_tx.send(msg)?;
             self.add_message("Connection established!".to_string(), false);
@@ -303,10 +369,19 @@ impl App {
             }
             MessageType::ConnectionAccept => {
                 if let Some(public_key) = msg.public_key {
+                    // Store/update peer in database
+                    if let Ok(peer_id) = self.message_db.get_or_create_peer(&public_key, &msg.from_ip) {
+                        self.current_peer_id = Some(peer_id.clone());
+                    }
+                    
                     self.peer_public_key = Some(public_key);
                     self.connection_status = ConnectionStatus::Connected;
                     self.connected_at = Some(Instant::now());
                     self.last_activity = Instant::now();
+                    
+                    // Always reload complete message history from database
+                    self.reload_current_peer_history();
+                    
                     self.add_message("Connection established!".to_string(), false);
                 }
             }
@@ -315,10 +390,21 @@ impl App {
                 self.peer_ip = None;
                 self.add_message("Connection declined by peer".to_string(), false);
             }
+            MessageType::Disconnect => {
+                self.add_message("Peer disconnected".to_string(), false);
+                self.reset_connection_state();
+            }
             MessageType::TextMessage => {
-                // Decrypt the message content
+                // Decrypt the message content for display
                 match self.crypto_manager.decrypt_message(&msg.content) {
                     Ok(decrypted_content) => {
+                        // Store decrypted message encrypted with local storage key
+                        if let Some(peer_id) = &self.current_peer_id {
+                            if let Ok(storage_encrypted) = self.crypto_manager.encrypt_for_storage(&decrypted_content) {
+                                let _ = self.message_db.store_message(peer_id, &storage_encrypted, false);
+                            }
+                        }
+                        
                         self.add_message(decrypted_content, false);
                         self.last_activity = Instant::now(); // Update activity time
                     }
@@ -434,15 +520,35 @@ impl App {
         // Don't store IP for reconnection in this case
     }
 
+    fn send_disconnect_notification(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if matches!(self.connection_status, ConnectionStatus::Connected) {
+            let disconnect_msg = NetworkMessage {
+                id: Uuid::new_v4(),
+                msg_type: MessageType::Disconnect,
+                from_ip: format!("127.0.0.1:{}", self.port),
+                content: "Peer disconnected".to_string(),
+                public_key: None,
+                timestamp: chrono::Utc::now(),
+            };
+            
+            self.network_tx.send(disconnect_msg)?;
+        }
+        Ok(())
+    }
+
     fn reset_connection_state(&mut self) {
         self.connection_status = ConnectionStatus::Online;
         self.peer_ip = None;
         self.peer_public_key = None;
+        self.current_peer_id = None;
         self.connected_at = None;
         self.last_activity = Instant::now();
         self.last_ping_sent = None;
         self.pending_ping = None;
         self.input_mode = InputMode::ConnectField;
+        
+        // Clear message history when disconnecting
+        self.messages.clear();
     }
 }
 
@@ -535,7 +641,7 @@ fn render_ui(f: &mut Frame, app: &App) {
         .style(connect_style)
         .block(Block::default()
             .borders(Borders::ALL)
-            .title(format!("Connect to IP:PORT (Listening on: {}) (Press Ctrl+C to quit)", app.port)))
+            .title(format!("Connect to IP:PORT (Listening on: {}) (Ctrl+C=quit, Ctrl+D=disconnect)", app.port)))
         .wrap(Wrap { trim: true });
     f.render_widget(connect_widget, chunks[0]);
 
@@ -629,7 +735,15 @@ fn render_messages(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
                 ("Peer: ", Style::default().fg(Color::White))
             };
 
+            // Extract just the time part (HH:MM:SS) from the timestamp (YYYY-MM-DD HH:MM:SS)
+            let time_part = if msg.timestamp.len() >= 19 {
+                &msg.timestamp[11..19] // Extract "HH:MM:SS" from "YYYY-MM-DD HH:MM:SS"
+            } else {
+                &msg.timestamp
+            };
+
             ListItem::new(Line::from(vec![
+                Span::styled(format!("[{}] ", time_part), Style::default().fg(Color::DarkGray)),
                 Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
                 Span::raw(&msg.content),
             ]))
@@ -745,7 +859,24 @@ async fn run_ui_loop(
 
                     match key.code {
                         KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                            // Send disconnect notification before quitting
+                            let _ = app.send_disconnect_notification();
                             return Ok(());
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                            // Ctrl+D: Disconnect from current peer
+                            if matches!(app.connection_status, ConnectionStatus::Connected) {
+                                let _ = app.send_disconnect_notification();
+                                app.add_message("Disconnected from peer".to_string(), false);
+                                
+                                // Give the disconnect message time to be sent before resetting state
+                                let app_clone = app_state.clone();
+                                tokio::spawn(async move {
+                                    sleep(TokioDuration::from_millis(100)).await;
+                                    let mut app = app_clone.lock().await;
+                                    app.reset_connection_state();
+                                });
+                            }
                         }
                         KeyCode::Tab => app.handle_tab(),
                         KeyCode::Enter => app.handle_enter()?,
