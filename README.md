@@ -1,5 +1,7 @@
 # P2P CLI - TUI Messenger
 
+![Rust](https://github.com/KyleDerZweite/p2p-cli/workflows/Rust/badge.svg)
+
 ![P2P TUI](public/p2p-tui.png)
 
 A terminal-based peer-to-peer messenger with proper connection flow and basic cryptography.
