@@ -100,7 +100,7 @@ p2p-cli -p 9000 -s secure -v
 ### TOFU (Trust on First Use)
 
 When running in TOFU mode (`-s tofu`), the app:
-1. Generates a permanent Ed25519 identity key pair (stored in `.p2p_identity`)
+1. Generates a permanent Ed25519 identity key pair (stored in the platform-specific config directory, e.g., `~/.config/p2p-cli/p2p_identity` on Linux or `%APPDATA%\\p2p-cli\\p2p_identity` on Windows)
 2. Signs session keys with the identity key
 3. Displays peer fingerprints (e.g., `A1B2-C3D4-E5F6-G7H8`)
 4. Warns if a known peer's identity key changes (potential MITM attack)
