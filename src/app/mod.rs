@@ -322,7 +322,11 @@ impl App {
     /// Handle slash commands
     fn handle_command(&mut self) -> Result<Option<NetworkMessage>, Box<dyn std::error::Error>> {
         let input = self.state.message_input.trim().to_lowercase();
+        let original_input = self.state.message_input.trim().to_string();
         let parts: Vec<&str> = input.split_whitespace().collect();
+        
+        // Show the command the user entered
+        self.add_message(original_input, MessageSource::Me);
         
         match parts.first().map(|s| *s) {
             Some("/help") | Some("/h") | Some("/?") => {

@@ -90,8 +90,10 @@ impl Renderer {
                 let mins = connection_duration.as_secs() / 60;
                 let secs = connection_duration.as_secs() % 60;
                 
-                title = format!("Connected to {} ({}m {}s)", peer_ip, mins, secs);
-                style = Style::default().fg(Color::Blue);
+                // Add LOCAL badge if localhost connection
+                let local_badge = if state.is_localhost { " [🏠 LOCAL]" } else { "" };
+                title = format!("Connected to {}{} ({}m {}s)", peer_ip, local_badge, mins, secs);
+                style = if state.is_localhost { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::Blue) };
                 
                 // Show session timeout countdown (assuming 300 second timeout)
                 let time_since_activity = Instant::now().duration_since(state.last_activity).as_secs();
@@ -125,6 +127,12 @@ impl Renderer {
                     IdentityStatus::ClonedIdentity => {
                         text_lines.push("Identity: ⚠ CLONED IDENTITY DETECTED!".to_string());
                         text_lines.push("WARNING: Someone may have stolen your identity file!".to_string());
+                    }
+                    IdentityStatus::None => {
+                        // In QUICK MODE, still show LOCAL indicator if localhost
+                        if state.is_localhost {
+                            text_lines.push("Identity: 🏠 LOCAL (localhost connection)".to_string());
+                        }
                     }
                     _ => {
                         if let Some(peer_fp) = &state.peer_fingerprint {
@@ -173,6 +181,14 @@ impl Renderer {
                 IdentityStatus::ClonedIdentity => {
                     " [⚠ CLONED IDENTITY - YOUR IDENTITY WAS STOLEN!]".to_string()
                 }
+                IdentityStatus::None => {
+                    // In QUICK MODE, still show LOCAL if localhost
+                    if incoming.is_localhost {
+                        " [🏠 LOCAL]".to_string()
+                    } else {
+                        "".to_string()
+                    }
+                }
                 IdentityStatus::Unknown => {
                     if let Some(fp) = &incoming.identity_fingerprint {
                         format!(" [? UNKNOWN: {}]", fp)
@@ -181,7 +197,6 @@ impl Renderer {
                     }
                 }
                 IdentityStatus::Mismatch => " [⚠ IDENTITY MISMATCH - DANGER!]".to_string(),
-                IdentityStatus::None => "".to_string(),
             };
             
             text_lines.push(format!("Incoming from {}{}", incoming.from_ip, identity_info));
@@ -197,7 +212,9 @@ impl Renderer {
                 IdentityStatus::ClonedIdentity => "[d] DECLINE IMMEDIATELY!",
                 IdentityStatus::Unknown => "[a] Accept & Trust  [o] Accept Once",
                 IdentityStatus::Mismatch => "[o] Accept Once (DANGEROUS!)",
-                IdentityStatus::None => "[a] Accept",
+                IdentityStatus::None => {
+                    if incoming.is_localhost { "[a] Accept (local)" } else { "[a] Accept" }
+                },
             };
             text_lines.push(format!(">>> {}  [d] Decline <<<", accept_text));
             
@@ -208,7 +225,9 @@ impl Renderer {
                     IdentityStatus::ClonedIdentity => Color::Red,
                     IdentityStatus::Unknown => Color::Yellow,
                     IdentityStatus::Mismatch => Color::Red,
-                    IdentityStatus::None => Color::Green,
+                    IdentityStatus::None => {
+                        if incoming.is_localhost { Color::Cyan } else { Color::Green }
+                    },
                 };
                 title = "Incoming Connection".to_string();
                 style = Style::default().fg(title_color);
@@ -296,7 +315,14 @@ impl Renderer {
                     IdentityStatus::ClonedIdentity => ("Connected [⚠ CLONED IDENTITY!]", Color::Red),
                     IdentityStatus::Unknown => ("Connected [? Unverified]", Color::Yellow),
                     IdentityStatus::Mismatch => ("Connected [⚠ IDENTITY MISMATCH]", Color::Red),
-                    IdentityStatus::None => ("Connected [Encrypted]", Color::Blue),
+                    IdentityStatus::None => {
+                        // In QUICK MODE, still show LOCAL if localhost
+                        if state.is_localhost {
+                            ("Connected [🏠 LOCAL]", Color::Cyan)
+                        } else {
+                            ("Connected [Encrypted]", Color::Blue)
+                        }
+                    },
                 }
             },
             ConnectionStatus::Disconnected => ("Disconnected", Color::Red),
