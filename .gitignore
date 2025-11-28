@@ -1,5 +1,22 @@
-/target
-/.idea
+# IDEs
+.idea/
+.vscode/
 /.c*
+
+# Rust / Cargo
+# Ignore build artifacts and cache.
+/target/
+
+# Backup files
+**/*.rs.bk
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env*
+
+# Application specific
 messages.db
-.env
+.p2p_identity

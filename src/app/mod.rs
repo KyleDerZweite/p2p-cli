@@ -172,6 +172,7 @@ impl App {
             peer_fingerprint: self.state.peer_fingerprint.clone(),
             peer_alias: self.state.peer_alias.clone(),
             identity_status: self.state.identity_status,
+            is_localhost: self.state.is_localhost,
             message_scroll: self.state.message_scroll,
         }
     }
@@ -330,6 +331,9 @@ impl App {
             Some("/fingerprint") | Some("/fp") => {
                 self.show_fingerprint();
             }
+            Some("/whoami") => {
+                self.show_whoami();
+            }
             Some("/alias") => {
                 if parts.len() > 1 {
                     let alias = parts[1..].join(" ");
@@ -367,6 +371,7 @@ impl App {
         self.add_system_message("═══ Available Commands ═══".to_string());
         self.add_system_message("/help, /h        - Show this help message".to_string());
         self.add_system_message("/fingerprint, /fp - Show identity fingerprints".to_string());
+        self.add_system_message("/whoami          - Show your identity info + security warning".to_string());
         self.add_system_message("/alias <name>    - Set alias for current peer".to_string());
         self.add_system_message("/trust           - Permanently trust current peer".to_string());
         self.add_system_message("/clear           - Clear message history".to_string());
@@ -387,6 +392,29 @@ impl App {
         self.add_system_message("F4/3: Maximum  - No persistent history".to_string());
     }
 
+    fn show_whoami(&mut self) {
+        self.add_system_message("═══ Your Identity ═══".to_string());
+        if let Some(our_fp) = &self.state.our_fingerprint {
+            self.add_system_message(format!("Fingerprint: {}", our_fp));
+        }
+        self.add_system_message(format!("Identity file: .p2p_identity"));
+        self.add_system_message("".to_string());
+        self.add_system_message("═══ ⚠ SECURITY WARNING ⚠ ═══".to_string());
+        self.add_system_message("Your identity is stored in the .p2p_identity file.".to_string());
+        self.add_system_message("This file contains your PRIVATE KEY.".to_string());
+        self.add_system_message("".to_string());
+        self.add_system_message("🚫 NEVER share this file with ANYONE!".to_string());
+        self.add_system_message("🚫 NEVER send it to a peer who asks for it!".to_string());
+        self.add_system_message("".to_string());
+        self.add_system_message("If someone asks you to share your identity file:".to_string());
+        self.add_system_message("  → They are trying to STEAL your identity".to_string());
+        self.add_system_message("  → They could impersonate you to others".to_string());
+        self.add_system_message("  → DISCONNECT and BLOCK them immediately!".to_string());
+        self.add_system_message("".to_string());
+        self.add_system_message("Your fingerprint is SAFE to share - it's public.".to_string());
+        self.add_system_message("Your identity FILE is PRIVATE - never share it!".to_string());
+    }
+
     fn show_fingerprint(&mut self) {
         if let Some(our_fp) = &self.state.our_fingerprint {
             self.add_system_message(format!("Your fingerprint: {}", our_fp));
@@ -396,6 +424,8 @@ impl App {
                 IdentityStatus::Verified => " ✓ VERIFIED",
                 IdentityStatus::Unknown => " (unknown)",
                 IdentityStatus::Mismatch => " ⚠ MISMATCH!",
+                IdentityStatus::LocalSelf => " 🏠 LOCAL/SELF",
+                IdentityStatus::ClonedIdentity => " ⚠ CLONED IDENTITY!",
                 IdentityStatus::None => "",
             };
             self.add_system_message(format!("Peer fingerprint: {}{}", peer_fp, status));
@@ -481,12 +511,15 @@ impl App {
                 self.state.identity_status = incoming.identity_status;
                 self.state.peer_alias = incoming.identity_alias.clone();
                 
-                // Trust the identity if requested
+                // Trust the identity if requested (but not for LocalSelf - that's auto-trusted)
                 if trust_level == TrustLevel::Trusted && incoming.identity_status == IdentityStatus::Unknown {
                     let _ = self.message_db.trust_identity(fingerprint, identity_key, trust_level, None);
                     self.state.identity_status = IdentityStatus::Verified;
                 }
             }
+            
+            // Set localhost flag
+            self.state.is_localhost = incoming.is_localhost;
             
             self.state.peer_ip = Some(incoming.from_ip.clone());
             self.state.peer_public_key = Some(incoming.public_key.clone());
@@ -504,6 +537,8 @@ impl App {
                 IdentityStatus::Verified => " [✓ VERIFIED]",
                 IdentityStatus::Unknown => " [unknown identity]",
                 IdentityStatus::Mismatch => " [⚠ IDENTITY MISMATCH!]",
+                IdentityStatus::LocalSelf => " [🏠 LOCAL/SELF]",
+                IdentityStatus::ClonedIdentity => " [⚠ CLONED IDENTITY - DANGER!]",
                 IdentityStatus::None => "",
             };
             self.add_system_message(format!("Connection established! Security: {}{}", negotiated_level.display_name(), identity_info));
@@ -540,15 +575,38 @@ impl App {
         Ok(None)
     }
 
+    /// Check if an IP address is localhost
+    fn is_localhost_ip(ip: &str) -> bool {
+        // Extract just the IP part (without port)
+        let ip_part = ip.split(':').next().unwrap_or(ip);
+        matches!(ip_part, "127.0.0.1" | "::1" | "localhost")
+    }
+
     /// Verify peer identity for TOFU mode
-    fn verify_peer_identity(&mut self, identity_key: &str, fingerprint: &str, session_key: &str, signature: &str) -> IdentityStatus {
+    /// Returns (IdentityStatus, is_localhost)
+    fn verify_peer_identity(&mut self, identity_key: &str, fingerprint: &str, session_key: &str, signature: &str, peer_ip: &str) -> (IdentityStatus, bool) {
+        let is_localhost = Self::is_localhost_ip(peer_ip);
+        
         // First verify the signature (proves peer owns the identity key)
         if let Ok(valid) = IdentityManager::verify_signature(identity_key, session_key.as_bytes(), signature) {
             if !valid {
-                return IdentityStatus::Mismatch; // Invalid signature
+                return (IdentityStatus::Mismatch, is_localhost); // Invalid signature
             }
         } else {
-            return IdentityStatus::Unknown; // Signature verification failed
+            return (IdentityStatus::Unknown, is_localhost); // Signature verification failed
+        }
+        
+        // Check if this is our own fingerprint
+        if let Some(our_fp) = &self.state.our_fingerprint {
+            if fingerprint == our_fp {
+                if is_localhost {
+                    // Same fingerprint via localhost = local/self connection
+                    return (IdentityStatus::LocalSelf, true);
+                } else {
+                    // Same fingerprint from remote IP = someone cloned our identity!
+                    return (IdentityStatus::ClonedIdentity, false);
+                }
+            }
         }
         
         // Check if we have this identity in our trust database
@@ -557,17 +615,17 @@ impl App {
                 if matches {
                     // Known and verified
                     self.state.peer_alias = trusted.alias.clone();
-                    IdentityStatus::Verified
+                    (IdentityStatus::Verified, is_localhost)
                 } else {
                     // KEY MISMATCH - potential impersonation!
-                    IdentityStatus::Mismatch
+                    (IdentityStatus::Mismatch, is_localhost)
                 }
             }
             Ok((_, None)) => {
                 // New identity - not trusted yet
-                IdentityStatus::Unknown
+                (IdentityStatus::Unknown, is_localhost)
             }
-            Err(_) => IdentityStatus::Unknown,
+            Err(_) => (IdentityStatus::Unknown, is_localhost),
         }
     }
 
@@ -578,21 +636,25 @@ impl App {
                     let peer_security_level = msg.security_level.unwrap_or(SecurityLevel::Quick);
                     
                     // Check identity if TOFU mode
-                    let (identity_status, identity_alias) = if let (Some(id_key), Some(fp), Some(sig)) = 
+                    let (identity_status, identity_alias, is_localhost) = if let (Some(id_key), Some(fp), Some(sig)) = 
                         (&msg.identity_key, &msg.identity_fingerprint, &msg.identity_signature) 
                     {
-                        let status = self.verify_peer_identity(id_key, fp, &public_key, sig);
-                        let alias = if status == IdentityStatus::Verified {
-                            self.message_db.get_trusted_identity(fp)
-                                .ok()
-                                .flatten()
-                                .and_then(|t| t.alias)
+                        let (status, is_local) = self.verify_peer_identity(id_key, fp, &public_key, sig, &msg.from_ip);
+                        let alias = if status == IdentityStatus::Verified || status == IdentityStatus::LocalSelf {
+                            if status == IdentityStatus::LocalSelf {
+                                Some("You (local)".to_string())
+                            } else {
+                                self.message_db.get_trusted_identity(fp)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|t| t.alias)
+                            }
                         } else {
                             None
                         };
-                        (status, alias)
+                        (status, alias, is_local)
                     } else {
-                        (IdentityStatus::None, None)
+                        (IdentityStatus::None, None, Self::is_localhost_ip(&msg.from_ip))
                     };
                     
                     self.state.incoming_connection = Some(IncomingConnection {
@@ -604,6 +666,7 @@ impl App {
                         identity_fingerprint: msg.identity_fingerprint,
                         identity_status,
                         identity_alias,
+                        is_localhost,
                     });
                     self.state.input_mode = InputMode::IncomingResponse;
                 }
@@ -618,17 +681,21 @@ impl App {
                     }
                     
                     // Handle identity verification
-                    let identity_status = if let (Some(id_key), Some(fp), Some(sig)) = 
+                    let (identity_status, is_localhost) = if let (Some(id_key), Some(fp), Some(sig)) = 
                         (&msg.identity_key, &msg.identity_fingerprint, &msg.identity_signature) 
                     {
-                        let status = self.verify_peer_identity(id_key, fp, &public_key, sig);
+                        let (status, is_local) = self.verify_peer_identity(id_key, fp, &public_key, sig, &msg.from_ip);
                         self.state.peer_identity_key = Some(id_key.clone());
                         self.state.peer_fingerprint = Some(fp.clone());
-                        status
+                        if status == IdentityStatus::LocalSelf {
+                            self.state.peer_alias = Some("You (local)".to_string());
+                        }
+                        (status, is_local)
                     } else {
-                        IdentityStatus::None
+                        (IdentityStatus::None, Self::is_localhost_ip(&msg.from_ip))
                     };
                     self.state.identity_status = identity_status;
+                    self.state.is_localhost = is_localhost;
                     
                     self.state.peer_public_key = Some(public_key);
                     self.state.peer_security_level = Some(peer_security_level);
@@ -643,6 +710,8 @@ impl App {
                         IdentityStatus::Verified => " [✓ VERIFIED]",
                         IdentityStatus::Unknown => " [unknown identity]",
                         IdentityStatus::Mismatch => " [⚠ IDENTITY MISMATCH!]",
+                        IdentityStatus::LocalSelf => " [🏠 LOCAL/SELF]",
+                        IdentityStatus::ClonedIdentity => " [⚠ CLONED IDENTITY - DANGER!]",
                         IdentityStatus::None => "",
                     };
                     self.add_system_message(format!("Connection established! Security: {}{}", negotiated_level.display_name(), identity_info));

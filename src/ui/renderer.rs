@@ -117,16 +117,29 @@ impl Renderer {
                     }
                 }
                 
-                // Show identity info (TOFU)
-                if let Some(peer_fp) = &state.peer_fingerprint {
-                    let status_icon = match state.identity_status {
-                        IdentityStatus::Verified => "✓",
-                        IdentityStatus::Unknown => "?",
-                        IdentityStatus::Mismatch => "⚠",
-                        IdentityStatus::None => "",
-                    };
-                    let alias = state.peer_alias.as_deref().unwrap_or("unknown");
-                    text_lines.push(format!("Identity: {} {} [{}]", status_icon, alias, peer_fp));
+                // Show identity info (TOFU) with special handling for local/self and cloned identity
+                match state.identity_status {
+                    IdentityStatus::LocalSelf => {
+                        text_lines.push("Identity: 🏠 LOCAL/SELF (same identity via localhost)".to_string());
+                    }
+                    IdentityStatus::ClonedIdentity => {
+                        text_lines.push("Identity: ⚠ CLONED IDENTITY DETECTED!".to_string());
+                        text_lines.push("WARNING: Someone may have stolen your identity file!".to_string());
+                    }
+                    _ => {
+                        if let Some(peer_fp) = &state.peer_fingerprint {
+                            let status_icon = match state.identity_status {
+                                IdentityStatus::Verified => "✓",
+                                IdentityStatus::Unknown => "?",
+                                IdentityStatus::Mismatch => "⚠",
+                                IdentityStatus::None => "",
+                                IdentityStatus::LocalSelf => "🏠",
+                                IdentityStatus::ClonedIdentity => "⚠",
+                            };
+                            let alias = state.peer_alias.as_deref().unwrap_or("unknown");
+                            text_lines.push(format!("Identity: {} {} [{}]", status_icon, alias, peer_fp));
+                        }
+                    }
                 }
                 
                 // Show ping status
@@ -154,6 +167,12 @@ impl Renderer {
                     let alias = incoming.identity_alias.as_deref().unwrap_or("known");
                     format!(" [✓ TRUSTED: {}]", alias)
                 }
+                IdentityStatus::LocalSelf => {
+                    " [🏠 LOCAL/SELF]".to_string()
+                }
+                IdentityStatus::ClonedIdentity => {
+                    " [⚠ CLONED IDENTITY - YOUR IDENTITY WAS STOLEN!]".to_string()
+                }
                 IdentityStatus::Unknown => {
                     if let Some(fp) = &incoming.identity_fingerprint {
                         format!(" [? UNKNOWN: {}]", fp)
@@ -174,6 +193,8 @@ impl Renderer {
             // Show different options based on identity status
             let accept_text = match incoming.identity_status {
                 IdentityStatus::Verified => "[a] Accept",
+                IdentityStatus::LocalSelf => "[a] Accept (local connection)",
+                IdentityStatus::ClonedIdentity => "[d] DECLINE IMMEDIATELY!",
                 IdentityStatus::Unknown => "[a] Accept & Trust  [o] Accept Once",
                 IdentityStatus::Mismatch => "[o] Accept Once (DANGEROUS!)",
                 IdentityStatus::None => "[a] Accept",
@@ -183,6 +204,8 @@ impl Renderer {
             if title.is_empty() {
                 let title_color = match incoming.identity_status {
                     IdentityStatus::Verified => Color::Green,
+                    IdentityStatus::LocalSelf => Color::Cyan,
+                    IdentityStatus::ClonedIdentity => Color::Red,
                     IdentityStatus::Unknown => Color::Yellow,
                     IdentityStatus::Mismatch => Color::Red,
                     IdentityStatus::None => Color::Green,
@@ -269,6 +292,8 @@ impl Renderer {
             ConnectionStatus::Connected => {
                 match state.identity_status {
                     IdentityStatus::Verified => ("Connected [✓ Verified]", Color::Blue),
+                    IdentityStatus::LocalSelf => ("Connected [🏠 LOCAL/SELF]", Color::Cyan),
+                    IdentityStatus::ClonedIdentity => ("Connected [⚠ CLONED IDENTITY!]", Color::Red),
                     IdentityStatus::Unknown => ("Connected [? Unverified]", Color::Yellow),
                     IdentityStatus::Mismatch => ("Connected [⚠ IDENTITY MISMATCH]", Color::Red),
                     IdentityStatus::None => ("Connected [Encrypted]", Color::Blue),

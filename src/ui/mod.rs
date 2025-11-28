@@ -56,6 +56,10 @@ pub enum IdentityStatus {
     Verified,
     /// Identity mismatch - potential impersonation!
     Mismatch,
+    /// Local connection to self (same fingerprint via localhost)
+    LocalSelf,
+    /// Same fingerprint from remote IP - potential identity theft!
+    ClonedIdentity,
 }
 
 /// Current state of the UI inputs and display
@@ -85,6 +89,8 @@ pub struct UiState {
     pub peer_alias: Option<String>,
     /// Identity verification status
     pub identity_status: IdentityStatus,
+    /// Whether the connection is via localhost
+    pub is_localhost: bool,
     /// Current scroll position in messages (0 = bottom/latest)
     pub message_scroll: usize,
 }
@@ -141,6 +147,8 @@ pub struct IncomingConnection {
     pub identity_status: IdentityStatus,
     /// Alias if known
     pub identity_alias: Option<String>,
+    /// Whether the connection is from localhost
+    pub is_localhost: bool,
 }
 
 /// Main UI manager that coordinates terminal, rendering, and input

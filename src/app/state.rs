@@ -49,6 +49,8 @@ pub struct AppState {
     pub peer_alias: Option<String>,
     /// Current identity verification status
     pub identity_status: IdentityStatus,
+    /// Whether the connection is via localhost (127.0.0.1 or ::1)
+    pub is_localhost: bool,
 
     // Scrolling
     /// Current scroll offset in messages (0 = showing latest)
@@ -86,6 +88,7 @@ impl AppState {
             peer_fingerprint: None,
             peer_alias: None,
             identity_status: IdentityStatus::None,
+            is_localhost: false,
             // Scrolling
             message_scroll: 0,
         }
@@ -110,6 +113,7 @@ impl AppState {
         self.peer_fingerprint = None;
         self.peer_alias = None;
         self.identity_status = IdentityStatus::None;
+        self.is_localhost = false;
         // Reset scroll
         self.message_scroll = 0;
     }
