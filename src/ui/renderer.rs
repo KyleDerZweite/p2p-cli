@@ -20,7 +20,9 @@ impl Renderer {
     /// Main render function - renders the entire UI
     pub fn render(&self, frame: &mut Frame, state: &UiState) {
         // Adjust connection info height based on whether there's an incoming connection
-        let connection_height = if state.incoming_connection.is_some() { 7 } else { 5 };
+        // Base height: 7 lines (5 content lines + 2 for borders)
+        // With incoming connection: 9 lines (extra for incoming prompt)
+        let connection_height = if state.incoming_connection.is_some() { 7 } else { 7 };
         
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -325,6 +327,7 @@ impl Renderer {
                     },
                 }
             },
+            ConnectionStatus::PeerDisconnected => ("Peer Disconnected - Press Ctrl+D to close", Color::Magenta),
             ConnectionStatus::Disconnected => ("Disconnected", Color::Red),
         };
 

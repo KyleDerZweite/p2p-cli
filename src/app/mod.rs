@@ -174,6 +174,7 @@ impl App {
             peer_security_level: self.state.peer_security_level,
             negotiated_security_level: self.state.negotiated_security_level,
             peer_ip: self.state.peer_ip.clone(),
+            previous_peer_ip: self.state.previous_peer_ip.clone(),
             connected_at: self.state.connected_at,
             last_activity: self.state.last_activity,
             last_ping_sent: self.state.last_ping_sent,
@@ -586,10 +587,16 @@ impl App {
             let msg = NetworkMessage::disconnect(
                 format!("127.0.0.1:{}", self.config.port)
             );
+            // Save peer IP before resetting so the message can be sent
+            self.state.previous_peer_ip = self.state.peer_ip.clone();
             // Reset local connection state after disconnecting
             self.add_system_message("Disconnected from peer.".to_string());
             self.reset_connection_state();
             return Ok(Some(msg));
+        } else if matches!(self.state.connection_status, ConnectionStatus::PeerDisconnected) {
+            // Peer already disconnected, just reset our state locally
+            self.add_system_message("Session closed.".to_string());
+            self.reset_connection_state();
         }
         Ok(None)
     }
@@ -776,8 +783,12 @@ impl App {
                 self.add_system_message("Connection declined by peer".to_string());
             }
             MessageType::Disconnect => {
-                self.add_system_message("Peer disconnected".to_string());
-                self.reset_connection_state();
+                self.add_system_message("Peer disconnected. Press Ctrl+D to close this session.".to_string());
+                // Don't fully reset - just mark as peer disconnected so user can still see messages
+                self.state.connection_status = ConnectionStatus::PeerDisconnected;
+                // Clear crypto state since peer is gone
+                self.state.pending_ping = None;
+                self.state.last_ping_sent = None;
             }
             MessageType::TextMessage => {
                 match self.crypto_manager.decrypt_message(&msg.content) {
@@ -882,12 +893,21 @@ impl App {
     }
 
     fn check_session_timeout(&mut self) -> Result<Option<NetworkMessage>, Box<dyn std::error::Error>> {
-        if !matches!(self.state.connection_status, ConnectionStatus::Connected) {
+        let now = Instant::now();
+        let time_since_activity = now.duration_since(self.state.last_activity).as_secs();
+
+        // Handle PeerDisconnected state - auto-reset after 5 minutes of inactivity
+        if matches!(self.state.connection_status, ConnectionStatus::PeerDisconnected) {
+            if time_since_activity >= 300 {
+                self.add_system_message("Session auto-closed after peer disconnect timeout.".to_string());
+                self.reset_connection_state();
+            }
             return Ok(None);
         }
 
-        let now = Instant::now();
-        let time_since_activity = now.duration_since(self.state.last_activity).as_secs();
+        if !matches!(self.state.connection_status, ConnectionStatus::Connected) {
+            return Ok(None);
+        }
 
         // Check if session should timeout (5 minutes)
         if time_since_activity >= 300 {

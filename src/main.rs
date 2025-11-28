@@ -96,7 +96,10 @@ async fn run_app(port: u16, security_level: SecurityLevel, verbose: bool) -> P2P
         if let Some(ui_event) = ui_manager.poll_event(100).map_err(|e| P2PError::TerminalError(e.to_string()))? {
             if let Some(network_msg) = app.handle_ui_event(ui_event).map_err(|e| P2PError::ConfigError(e.to_string()))? {
                 // Send network message if generated
-                if let Some(peer_ip) = &app.get_ui_state().peer_ip {
+                // Use peer_ip if available, otherwise fall back to previous_peer_ip (for disconnect messages)
+                let ui_state = app.get_ui_state();
+                let target_ip = ui_state.peer_ip.as_ref().or(ui_state.previous_peer_ip.as_ref());
+                if let Some(peer_ip) = target_ip {
                     if let Ok(addr) = peer_ip.parse() {
                         let _ = network_manager.send_message(network_msg, addr).await;
                     }

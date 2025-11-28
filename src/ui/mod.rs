@@ -73,6 +73,8 @@ pub struct UiState {
     pub peer_security_level: Option<SecurityLevel>,
     pub negotiated_security_level: Option<SecurityLevel>,
     pub peer_ip: Option<String>,
+    /// Previous peer IP (used for sending disconnect messages after state reset)
+    pub previous_peer_ip: Option<String>,
     pub connected_at: Option<Instant>,
     pub last_activity: Instant,
     pub last_ping_sent: Option<Instant>,
@@ -105,11 +107,13 @@ pub enum InputMode {
 }
 
 /// Connection status for UI display
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionStatus {
     Online,
     Establishing,
     Connected,
+    /// Peer has disconnected, but we still have the session data (messages visible)
+    PeerDisconnected,
     Disconnected,
 }
 
