@@ -2,7 +2,7 @@ use std::time::Instant;
 use std::collections::VecDeque;
 use uuid::Uuid;
 
-use crate::ui::{InputMode, ConnectionStatus, ChatMessage, IncomingConnection};
+use crate::ui::{InputMode, ConnectionStatus, ChatMessage, IncomingConnection, IdentityStatus};
 
 /// Application state that persists between UI updates
 #[derive(Debug)]
@@ -37,6 +37,22 @@ pub struct AppState {
     pub should_quit: bool,
     pub port: u16,
     pub show_security_selection: bool,
+
+    // Identity (TOFU)
+    /// Our identity fingerprint
+    pub our_fingerprint: Option<String>,
+    /// Peer's identity key (Ed25519 public key, base64)
+    pub peer_identity_key: Option<String>,
+    /// Peer's identity fingerprint
+    pub peer_fingerprint: Option<String>,
+    /// Peer's alias (if set in trust database)
+    pub peer_alias: Option<String>,
+    /// Current identity verification status
+    pub identity_status: IdentityStatus,
+
+    // Scrolling
+    /// Current scroll offset in messages (0 = showing latest)
+    pub message_scroll: usize,
 }
 
 impl AppState {
@@ -64,6 +80,14 @@ impl AppState {
             should_quit: false,
             port,
             show_security_selection: false,
+            // Identity
+            our_fingerprint: None,
+            peer_identity_key: None,
+            peer_fingerprint: None,
+            peer_alias: None,
+            identity_status: IdentityStatus::None,
+            // Scrolling
+            message_scroll: 0,
         }
     }
 
@@ -81,6 +105,13 @@ impl AppState {
         self.pending_ping = None;
         self.input_mode = InputMode::ConnectField;
         self.messages.clear();
+        // Reset identity
+        self.peer_identity_key = None;
+        self.peer_fingerprint = None;
+        self.peer_alias = None;
+        self.identity_status = IdentityStatus::None;
+        // Reset scroll
+        self.message_scroll = 0;
     }
 
     /// Check if currently connected to a peer
@@ -91,5 +122,26 @@ impl AppState {
     /// Check if there's an incoming connection waiting for response
     pub fn has_incoming_connection(&self) -> bool {
         self.incoming_connection.is_some()
+    }
+
+    /// Scroll messages up (towards older messages)
+    pub fn scroll_up(&mut self, lines: usize) {
+        let max_scroll = self.messages.len().saturating_sub(1);
+        self.message_scroll = (self.message_scroll + lines).min(max_scroll);
+    }
+
+    /// Scroll messages down (towards newer messages)
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.message_scroll = self.message_scroll.saturating_sub(lines);
+    }
+
+    /// Scroll to top (oldest messages)
+    pub fn scroll_top(&mut self) {
+        self.message_scroll = self.messages.len().saturating_sub(1);
+    }
+
+    /// Scroll to bottom (newest messages)
+    pub fn scroll_bottom(&mut self) {
+        self.message_scroll = 0;
     }
 }

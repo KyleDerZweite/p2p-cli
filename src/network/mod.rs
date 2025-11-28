@@ -1,6 +1,5 @@
 use tokio::sync::mpsc;
 use std::net::SocketAddr;
-use uuid::Uuid;
 
 pub mod messages;
 pub mod connection;

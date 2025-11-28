@@ -1,0 +1,19 @@
+{
+    msg: "content",
+    timestamp: "1752777396", // Unix timestamp in seconds
+    sender: "<uuid>", // Unique identifier for the sender
+    uuid: "<uuid>", // Unique identifier for the message
+}
+
+
+Server-Wrapper
+    - Server1
+        - Category1
+            - TextChannel1
+            - (VoiceChannel2)
+//        - SubServer1<uuid-1234>
+//        - SubServer2
+//            - Category1
+//                - Channel1
+//                - Channel2
+//    - Server2<uuid-1234> [not open, proxied local from server1]

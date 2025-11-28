@@ -7,7 +7,7 @@ use ratatui::{
 };
 use std::time::Instant;
 
-use super::{UiState, InputMode, ConnectionStatus, SecurityLevel, ChatMessage, IncomingConnection};
+use super::{UiState, InputMode, ConnectionStatus, SecurityLevel, IdentityStatus};
 
 /// Handles all UI rendering logic
 pub struct Renderer;
@@ -114,6 +114,18 @@ impl Renderer {
                     }
                 }
                 
+                // Show identity info (TOFU)
+                if let Some(peer_fp) = &state.peer_fingerprint {
+                    let status_icon = match state.identity_status {
+                        IdentityStatus::Verified => "✓",
+                        IdentityStatus::Unknown => "?",
+                        IdentityStatus::Mismatch => "⚠",
+                        IdentityStatus::None => "",
+                    };
+                    let alias = state.peer_alias.as_deref().unwrap_or("unknown");
+                    text_lines.push(format!("Identity: {} {} [{}]", status_icon, alias, peer_fp));
+                }
+                
                 // Show ping status
                 if let Some(last_ping) = state.last_ping_sent {
                     let ping_age = Instant::now().duration_since(last_ping).as_secs();
@@ -132,15 +144,48 @@ impl Renderer {
             if !text_lines.is_empty() {
                 text_lines.push("".to_string()); // Empty line separator
             }
-            text_lines.push(format!("Incoming from {} ({}s remaining)", incoming.from_ip, remaining));
-            text_lines.push(format!("Peer Security: {} → Negotiated: {}", 
+            
+            // Show identity status for incoming connection
+            let identity_info = match incoming.identity_status {
+                IdentityStatus::Verified => {
+                    let alias = incoming.identity_alias.as_deref().unwrap_or("known");
+                    format!(" [✓ TRUSTED: {}]", alias)
+                }
+                IdentityStatus::Unknown => {
+                    if let Some(fp) = &incoming.identity_fingerprint {
+                        format!(" [? UNKNOWN: {}]", fp)
+                    } else {
+                        " [no identity]".to_string()
+                    }
+                }
+                IdentityStatus::Mismatch => " [⚠ IDENTITY MISMATCH - DANGER!]".to_string(),
+                IdentityStatus::None => "".to_string(),
+            };
+            
+            text_lines.push(format!("Incoming from {}{}", incoming.from_ip, identity_info));
+            text_lines.push(format!("({}s remaining)", remaining));
+            text_lines.push(format!("Security: {} → {}", 
                 incoming.security_level.display_name(),
                 state.security_level.negotiate_with(incoming.security_level).display_name()));
-            text_lines.push("Press 'a' to accept, 'd' to decline".to_string());
+            
+            // Show different options based on identity status
+            let accept_text = match incoming.identity_status {
+                IdentityStatus::Verified => "'a' accept",
+                IdentityStatus::Unknown => "'a' accept & trust, 'o' accept once",
+                IdentityStatus::Mismatch => "'o' accept once (DANGEROUS!)",
+                IdentityStatus::None => "'a' accept",
+            };
+            text_lines.push(format!("{}, 'd' decline", accept_text));
             
             if title.is_empty() {
+                let title_color = match incoming.identity_status {
+                    IdentityStatus::Verified => Color::Green,
+                    IdentityStatus::Unknown => Color::Yellow,
+                    IdentityStatus::Mismatch => Color::Red,
+                    IdentityStatus::None => Color::Green,
+                };
                 title = "Incoming Connection".to_string();
-                style = Style::default().fg(Color::Green);
+                style = Style::default().fg(title_color);
             }
         }
 
@@ -148,6 +193,9 @@ impl Renderer {
         if title.is_empty() {
             title = "Connection Status".to_string();
             text_lines.push("No active connection".to_string());
+            if let Some(our_fp) = &state.our_fingerprint {
+                text_lines.push(format!("Your fingerprint: {}", our_fp));
+            }
         }
 
         let text = text_lines.join("\n");
@@ -160,10 +208,20 @@ impl Renderer {
         frame.render_widget(widget, area);
     }
 
-    /// Render the chat messages
+    /// Render the chat messages with scrolling support
     fn render_messages(&self, frame: &mut Frame, area: ratatui::layout::Rect, state: &UiState) {
-        let messages: Vec<ListItem> = state.messages
+        let total_messages = state.messages.len();
+        let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
+        
+        // Calculate which messages to show based on scroll position
+        // scroll = 0 means show latest, scroll > 0 means show older
+        let end_idx = total_messages.saturating_sub(state.message_scroll);
+        let start_idx = end_idx.saturating_sub(visible_height);
+        
+        let visible_messages: Vec<ListItem> = state.messages
             .iter()
+            .skip(start_idx)
+            .take(end_idx - start_idx)
             .map(|msg| {
                 let (prefix, style) = if msg.from_self {
                     ("You: ", Style::default().fg(Color::Cyan))
@@ -186,8 +244,17 @@ impl Renderer {
             })
             .collect();
 
-        let widget = List::new(messages)
-            .block(Block::default().borders(Borders::ALL).title("Messages"));
+        // Build title with scroll indicator
+        let title = if state.message_scroll > 0 {
+            format!("Messages [{}/{} - PgUp/PgDn to scroll]", 
+                    total_messages.saturating_sub(state.message_scroll),
+                    total_messages)
+        } else {
+            format!("Messages [{}]", total_messages)
+        };
+
+        let widget = List::new(visible_messages)
+            .block(Block::default().borders(Borders::ALL).title(title));
         frame.render_widget(widget, area);
     }
 
@@ -197,13 +264,11 @@ impl Renderer {
             ConnectionStatus::Online => ("Online", Color::Green),
             ConnectionStatus::Establishing => ("Establishing...", Color::Yellow),
             ConnectionStatus::Connected => {
-                if let Some(negotiated_level) = state.negotiated_security_level {
-                    match negotiated_level {
-                        SecurityLevel::Quick => ("Connected [Encrypted]", Color::Blue),
-                        _ => ("Connected [Encrypted + Verified]", Color::Blue),
-                    }
-                } else {
-                    ("Connected [Encrypted]", Color::Blue)
+                match state.identity_status {
+                    IdentityStatus::Verified => ("Connected [✓ Verified]", Color::Blue),
+                    IdentityStatus::Unknown => ("Connected [? Unverified]", Color::Yellow),
+                    IdentityStatus::Mismatch => ("Connected [⚠ IDENTITY MISMATCH]", Color::Red),
+                    IdentityStatus::None => ("Connected [Encrypted]", Color::Blue),
                 }
             },
             ConnectionStatus::Disconnected => ("Disconnected", Color::Red),
@@ -219,7 +284,7 @@ impl Renderer {
             .style(message_style)
             .block(Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Message [{}]", status_text))
+                .title(format!("Message [{}] - Type /help for commands", status_text))
                 .title_style(Style::default().fg(status_color)))
             .wrap(Wrap { trim: true });
         

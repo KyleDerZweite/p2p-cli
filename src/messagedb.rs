@@ -11,6 +11,41 @@ pub struct StoredMessage {
     pub timestamp: String,
 }
 
+/// Trust level for a peer's identity
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrustLevel {
+    /// Unknown peer - never seen before
+    Unknown = 0,
+    /// Temporarily trusted for this session only
+    TrustedOnce = 1,
+    /// Permanently trusted (TOFU)
+    Trusted = 2,
+    /// Verified through external means
+    Verified = 3,
+}
+
+impl From<i32> for TrustLevel {
+    fn from(value: i32) -> Self {
+        match value {
+            1 => TrustLevel::TrustedOnce,
+            2 => TrustLevel::Trusted,
+            3 => TrustLevel::Verified,
+            _ => TrustLevel::Unknown,
+        }
+    }
+}
+
+/// Information about a trusted identity
+#[derive(Debug, Clone)]
+pub struct TrustedIdentity {
+    pub identity_key: String,
+    pub fingerprint: String,
+    pub alias: Option<String>,
+    pub trust_level: TrustLevel,
+    pub first_seen: String,
+    pub last_seen: String,
+}
+
 pub struct MessageDB {
     conn: Connection,
 }
@@ -66,8 +101,134 @@ impl MessageDB {
             [],
         )?;
 
+        // TOFU: Trusted identities table
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS trusted_identities (
+                fingerprint TEXT PRIMARY KEY,
+                identity_key TEXT NOT NULL,
+                alias TEXT,
+                trust_level INTEGER NOT NULL DEFAULT 0,
+                first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
         Ok(())
     }
+
+    // ==================== TOFU Identity Methods ====================
+
+    /// Get a trusted identity by fingerprint
+    pub fn get_trusted_identity(&self, fingerprint: &str) -> Result<Option<TrustedIdentity>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT identity_key, fingerprint, alias, trust_level, first_seen, last_seen 
+             FROM trusted_identities 
+             WHERE fingerprint = ?1"
+        )?;
+
+        let result = stmt.query_row(params![fingerprint], |row| {
+            Ok(TrustedIdentity {
+                identity_key: row.get(0)?,
+                fingerprint: row.get(1)?,
+                alias: row.get(2)?,
+                trust_level: TrustLevel::from(row.get::<_, i32>(3)?),
+                first_seen: row.get(4)?,
+                last_seen: row.get(5)?,
+            })
+        });
+
+        match result {
+            Ok(identity) => Ok(Some(identity)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Check if an identity key matches a trusted fingerprint
+    pub fn verify_identity(&self, fingerprint: &str, identity_key: &str) -> Result<(bool, Option<TrustedIdentity>), Box<dyn std::error::Error>> {
+        if let Some(trusted) = self.get_trusted_identity(fingerprint)? {
+            if trusted.identity_key == identity_key {
+                // Update last seen
+                self.conn.execute(
+                    "UPDATE trusted_identities SET last_seen = CURRENT_TIMESTAMP WHERE fingerprint = ?1",
+                    params![fingerprint],
+                )?;
+                Ok((true, Some(trusted)))
+            } else {
+                // KEY MISMATCH - potential impersonation!
+                Ok((false, Some(trusted)))
+            }
+        } else {
+            // Unknown identity
+            Ok((true, None))
+        }
+    }
+
+    /// Trust a new identity (TOFU)
+    pub fn trust_identity(
+        &self, 
+        fingerprint: &str, 
+        identity_key: &str, 
+        trust_level: TrustLevel,
+        alias: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO trusted_identities (fingerprint, identity_key, alias, trust_level, first_seen, last_seen)
+             VALUES (?1, ?2, ?3, ?4, 
+                     COALESCE((SELECT first_seen FROM trusted_identities WHERE fingerprint = ?1), CURRENT_TIMESTAMP),
+                     CURRENT_TIMESTAMP)",
+            params![fingerprint, identity_key, alias, trust_level as i32],
+        )?;
+        Ok(())
+    }
+
+    /// Update the alias for a trusted identity
+    pub fn set_identity_alias(&self, fingerprint: &str, alias: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.conn.execute(
+            "UPDATE trusted_identities SET alias = ?1 WHERE fingerprint = ?2",
+            params![alias, fingerprint],
+        )?;
+        Ok(())
+    }
+
+    /// Remove trust from an identity
+    pub fn untrust_identity(&self, fingerprint: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.conn.execute(
+            "DELETE FROM trusted_identities WHERE fingerprint = ?1",
+            params![fingerprint],
+        )?;
+        Ok(())
+    }
+
+    /// Get all trusted identities
+    pub fn get_all_trusted_identities(&self) -> Result<Vec<TrustedIdentity>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT identity_key, fingerprint, alias, trust_level, first_seen, last_seen 
+             FROM trusted_identities 
+             ORDER BY last_seen DESC"
+        )?;
+
+        let identity_iter = stmt.query_map([], |row| {
+            Ok(TrustedIdentity {
+                identity_key: row.get(0)?,
+                fingerprint: row.get(1)?,
+                alias: row.get(2)?,
+                trust_level: TrustLevel::from(row.get::<_, i32>(3)?),
+                first_seen: row.get(4)?,
+                last_seen: row.get(5)?,
+            })
+        })?;
+
+        let mut identities = Vec::new();
+        for identity in identity_iter {
+            identities.push(identity?);
+        }
+
+        Ok(identities)
+    }
+
+    // ==================== Original Methods ====================
 
     pub fn generate_peer_id(public_key: &str) -> String {
         let mut hasher = Sha256::new();

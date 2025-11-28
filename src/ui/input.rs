@@ -43,30 +43,43 @@ impl InputHandler {
         use crate::app::SecurityLevel;
         
         match key_code {
+            // Ctrl+C: Quit
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(UiEvent::Quit)
             }
+            // Ctrl+D: Disconnect
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(UiEvent::Disconnect)
             }
+            // Ctrl+S: Show security selection
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(UiEvent::ShowSecuritySelection)
             }
+            // Navigation and basic input
             KeyCode::Tab => Some(UiEvent::Tab),
             KeyCode::Enter => Some(UiEvent::Enter),
             KeyCode::Backspace => Some(UiEvent::Backspace),
+            // Connection response keys
             KeyCode::Char('a') => Some(UiEvent::AcceptConnection),
             KeyCode::Char('d') => Some(UiEvent::DeclineConnection),
+            KeyCode::Char('o') => Some(UiEvent::AcceptConnectionOnce),
+            // Security level selection with F-keys
             KeyCode::F(1) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Quick)),
             KeyCode::F(2) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Tofu)),
             KeyCode::F(3) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Secure)),
             KeyCode::F(4) => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Maximum)),
-            KeyCode::Char('0') => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Quick)),
-            KeyCode::Char('1') => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Tofu)),
-            KeyCode::Char('2') => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Secure)),
-            KeyCode::Char('3') => Some(UiEvent::SecurityLevelSelect(SecurityLevel::Maximum)),
+            // Scrolling controls
+            KeyCode::PageUp => Some(UiEvent::ScrollUp),
+            KeyCode::PageDown => Some(UiEvent::ScrollDown),
+            KeyCode::Home if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollTop),
+            KeyCode::End if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollBottom),
+            KeyCode::Up if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollUp),
+            KeyCode::Down if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollDown),
+            // Escape and other keys
             KeyCode::Esc => Some(UiEvent::KeyPress(key_code, modifiers)),
+            // Regular character input
             KeyCode::Char(c) => Some(UiEvent::CharInput(c)),
+            // Pass through other key presses
             _ => Some(UiEvent::KeyPress(key_code, modifiers)),
         }
     }

@@ -29,10 +29,33 @@ pub enum UiEvent {
     Disconnect,
     AcceptConnection,
     DeclineConnection,
+    /// Accept connection but only for this session (don't permanently trust)
+    AcceptConnectionOnce,
     CharInput(char),
     Resize(u16, u16),
     SecurityLevelSelect(SecurityLevel),
     ShowSecuritySelection,
+    /// Scroll messages up
+    ScrollUp,
+    /// Scroll messages down
+    ScrollDown,
+    /// Scroll messages to top
+    ScrollTop,
+    /// Scroll messages to bottom
+    ScrollBottom,
+}
+
+/// Verification status for TOFU identity
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IdentityStatus {
+    /// No identity verification (Level 0)
+    None,
+    /// Unknown identity - never seen before
+    Unknown,
+    /// Identity matches trusted record
+    Verified,
+    /// Identity mismatch - potential impersonation!
+    Mismatch,
 }
 
 /// Current state of the UI inputs and display
@@ -54,6 +77,16 @@ pub struct UiState {
     pub incoming_connection: Option<IncomingConnection>,
     pub port: u16,
     pub show_security_selection: bool,
+    /// Our identity fingerprint
+    pub our_fingerprint: Option<String>,
+    /// Peer's identity fingerprint (for TOFU)
+    pub peer_fingerprint: Option<String>,
+    /// Peer's identity alias (if set)
+    pub peer_alias: Option<String>,
+    /// Identity verification status
+    pub identity_status: IdentityStatus,
+    /// Current scroll position in messages (0 = bottom/latest)
+    pub message_scroll: usize,
 }
 
 /// Input modes for the terminal interface
@@ -92,6 +125,14 @@ pub struct IncomingConnection {
     pub public_key: String,
     pub security_level: SecurityLevel,
     pub expires_at: Instant,
+    /// Identity public key (for TOFU verification)
+    pub identity_key: Option<String>,
+    /// Identity fingerprint
+    pub identity_fingerprint: Option<String>,
+    /// Whether the identity is known/trusted
+    pub identity_status: IdentityStatus,
+    /// Alias if known
+    pub identity_alias: Option<String>,
 }
 
 /// Main UI manager that coordinates terminal, rendering, and input
