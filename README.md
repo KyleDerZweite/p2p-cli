@@ -4,19 +4,21 @@
 
 A modern, secure, terminal-based peer-to-peer messenger written in Rust. Features hybrid RSA/AES encryption, tiered security levels (Quick→Maximum), persistent encrypted message history, and a clean TUI interface. No servers, no middlemen—just direct, encrypted communication between peers.
 
+> IMPORTANT: This project is under development and is not a stable, released product. It is provided "as-is", without warranty or guarantee. It works to some extent, but may be incomplete, unstable, or contain bugs. Mentions of a version such as "v2" do not imply an official release.
+
 ![P2P TUI](public/p2p-tui.png)
 
 ![Security Selection](public/p2p-tui-security-select.png)
 
 ## Features
 
-- 🔐 **Hybrid RSA/AES Encryption** - Ephemeral session keys + AES-256-GCM for messages
-- 🆔 **TOFU Identity Verification** - Trust on First Use with Ed25519 identity keys
-- 🎚️ **Four Security Levels** - From quick messaging to maximum security
-- 💾 **Persistent Encrypted History** - SQLite storage with AES-256 encryption
-- 🖥️ **Modern TUI** - Ratatui-based terminal interface with scrolling
-- ⌨️ **Chat Commands** - `/help`, `/fingerprint`, `/alias`, and more
-- 📜 **Message Scrolling** - PageUp/PageDown to browse history
+- **Hybrid RSA/AES Encryption** - Ephemeral session keys + AES-256-GCM for messages
+- **TOFU Identity Verification** - Trust on First Use with Ed25519 identity keys
+- **Four Security Levels** - From quick messaging to maximum security
+- **Persistent Encrypted History** - SQLite storage with AES-256 encryption
+- **Modern TUI** - Ratatui-based terminal interface with scrolling
+- **Chat Commands** - `/help`, `/fingerprint`, `/alias`, and more
+- **Message Scrolling** - PageUp/PageDown to browse history
 
 ## Installation
 
