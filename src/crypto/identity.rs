@@ -183,7 +183,6 @@ impl Drop for IdentityManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile;
 
     #[test]
