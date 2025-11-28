@@ -10,7 +10,7 @@ pub use config::{AppConfig, SecurityLevel};
 use crate::crypto::{CryptoManager, IdentityManager};
 use crate::messagedb::{MessageDB, StoredMessage, TrustLevel};
 use crate::network::{NetworkMessage, MessageType, NetworkEvent};
-use crate::ui::{UiEvent, UiState, InputMode, ConnectionStatus, ChatMessage, IncomingConnection, IdentityStatus};
+use crate::ui::{UiEvent, UiState, InputMode, ConnectionStatus, ChatMessage, IncomingConnection, IdentityStatus, MessageSource};
 
 /// Main application logic coordinator
 pub struct App {
@@ -60,13 +60,31 @@ impl App {
                 self.handle_enter()
             }
             UiEvent::AcceptConnection => {
-                self.accept_connection(TrustLevel::Trusted)
+                // Only handle as connection accept if there's a pending incoming connection
+                if self.state.incoming_connection.is_some() {
+                    self.accept_connection(TrustLevel::Trusted)
+                } else {
+                    self.handle_char_input('a');
+                    Ok(None)
+                }
             }
             UiEvent::AcceptConnectionOnce => {
-                self.accept_connection(TrustLevel::TrustedOnce)
+                // Only handle as connection accept if there's a pending incoming connection
+                if self.state.incoming_connection.is_some() {
+                    self.accept_connection(TrustLevel::TrustedOnce)
+                } else {
+                    self.handle_char_input('o');
+                    Ok(None)
+                }
             }
             UiEvent::DeclineConnection => {
-                self.decline_connection()
+                // Only handle as connection decline if there's a pending incoming connection
+                if self.state.incoming_connection.is_some() {
+                    self.decline_connection()
+                } else {
+                    self.handle_char_input('d');
+                    Ok(None)
+                }
             }
             UiEvent::Disconnect => {
                 self.send_disconnect_notification()
@@ -125,7 +143,7 @@ impl App {
             }
             NetworkEvent::ConnectionFailed(addr, error) => {
                 // Handle connection failure
-                self.add_message(format!("Connection failed: {}", error), false);
+                self.add_system_message(format!("Connection failed: {}", error));
             }
             _ => {}
         }
@@ -258,10 +276,17 @@ impl App {
     }
 
     fn send_message(&mut self) -> Result<Option<NetworkMessage>, Box<dyn std::error::Error>> {
-        if !self.state.message_input.is_empty() && matches!(self.state.connection_status, ConnectionStatus::Connected) {
-            // Check for commands
+        if !self.state.message_input.is_empty() {
+            // Check for commands first - these can work even when not connected
             if self.state.message_input.starts_with('/') {
                 return self.handle_command();
+            }
+            
+            // For regular messages, require connection
+            if !matches!(self.state.connection_status, ConnectionStatus::Connected) {
+                self.add_system_message("Not connected to a peer. Use /help for available commands.".to_string());
+                self.state.message_input.clear();
+                return Ok(None);
             }
             
             if let Some(peer_public_key) = &self.state.peer_public_key {
@@ -281,7 +306,7 @@ impl App {
                     encrypted_content,
                 );
                 
-                self.add_message(self.state.message_input.clone(), true);
+                self.add_message(self.state.message_input.clone(), MessageSource::Me);
                 self.state.message_input.clear();
                 self.state.last_activity = Instant::now();
                 // Reset scroll to bottom when sending
@@ -310,7 +335,7 @@ impl App {
                     let alias = parts[1..].join(" ");
                     self.set_peer_alias(&alias);
                 } else {
-                    self.add_message("Usage: /alias <name>".to_string(), false);
+                    self.add_system_message("Usage: /alias <name>".to_string());
                 }
             }
             Some("/trust") => {
@@ -319,7 +344,7 @@ impl App {
             Some("/clear") => {
                 self.state.messages.clear();
                 self.state.message_scroll = 0;
-                self.add_message("Messages cleared".to_string(), false);
+                self.add_system_message("Messages cleared".to_string());
             }
             Some("/disconnect") | Some("/dc") => {
                 self.state.message_input.clear();
@@ -329,7 +354,7 @@ impl App {
                 self.show_status();
             }
             Some(cmd) => {
-                self.add_message(format!("Unknown command: {}. Type /help for available commands.", cmd), false);
+                self.add_system_message(format!("Unknown command: {}. Type /help for available commands.", cmd));
             }
             None => {}
         }
@@ -339,26 +364,32 @@ impl App {
     }
 
     fn show_help(&mut self) {
-        self.add_message("═══ Available Commands ═══".to_string(), false);
-        self.add_message("/help, /h        - Show this help message".to_string(), false);
-        self.add_message("/fingerprint, /fp - Show identity fingerprints".to_string(), false);
-        self.add_message("/alias <name>    - Set alias for current peer".to_string(), false);
-        self.add_message("/trust           - Permanently trust current peer".to_string(), false);
-        self.add_message("/clear           - Clear message history".to_string(), false);
-        self.add_message("/disconnect, /dc - Disconnect from peer".to_string(), false);
-        self.add_message("/status          - Show connection status".to_string(), false);
-        self.add_message("═══ Keyboard Shortcuts ═══".to_string(), false);
-        self.add_message("Ctrl+C           - Quit application".to_string(), false);
-        self.add_message("Ctrl+D           - Disconnect from peer".to_string(), false);
-        self.add_message("Ctrl+S           - Open security level selection".to_string(), false);
-        self.add_message("Tab              - Switch between input fields".to_string(), false);
-        self.add_message("PageUp/Down      - Scroll messages".to_string(), false);
-        self.add_message("Ctrl+Home/End    - Scroll to top/bottom".to_string(), false);
+        self.add_system_message("═══ Available Commands ═══".to_string());
+        self.add_system_message("/help, /h        - Show this help message".to_string());
+        self.add_system_message("/fingerprint, /fp - Show identity fingerprints".to_string());
+        self.add_system_message("/alias <name>    - Set alias for current peer".to_string());
+        self.add_system_message("/trust           - Permanently trust current peer".to_string());
+        self.add_system_message("/clear           - Clear message history".to_string());
+        self.add_system_message("/disconnect, /dc - Disconnect from peer".to_string());
+        self.add_system_message("/status          - Show connection status".to_string());
+        self.add_system_message("═══ Keyboard Shortcuts ═══".to_string());
+        self.add_system_message("Ctrl+C           - Quit application".to_string());
+        self.add_system_message("Ctrl+D           - Disconnect from peer".to_string());
+        self.add_system_message("Ctrl+S           - Open security level selection".to_string());
+        self.add_system_message("Tab              - Switch between input fields".to_string());
+        self.add_system_message("PageUp/Down      - Scroll messages".to_string());
+        self.add_system_message("Ctrl+Home/End    - Scroll to top/bottom".to_string());
+        self.add_system_message("═══ Security Levels (F1-F4) ═══".to_string());
+        self.add_system_message(format!("Current: {}", self.config.security_level.display_name()));
+        self.add_system_message("F1/0: Quick    - No verification".to_string());
+        self.add_system_message("F2/1: TOFU     - Trust on first use".to_string());
+        self.add_system_message("F3/2: Secure   - Signatures + rotation".to_string());
+        self.add_system_message("F4/3: Maximum  - No persistent history".to_string());
     }
 
     fn show_fingerprint(&mut self) {
         if let Some(our_fp) = &self.state.our_fingerprint {
-            self.add_message(format!("Your fingerprint: {}", our_fp), false);
+            self.add_system_message(format!("Your fingerprint: {}", our_fp));
         }
         if let Some(peer_fp) = &self.state.peer_fingerprint {
             let status = match self.state.identity_status {
@@ -367,46 +398,46 @@ impl App {
                 IdentityStatus::Mismatch => " ⚠ MISMATCH!",
                 IdentityStatus::None => "",
             };
-            self.add_message(format!("Peer fingerprint: {}{}", peer_fp, status), false);
+            self.add_system_message(format!("Peer fingerprint: {}{}", peer_fp, status));
         } else {
-            self.add_message("No peer connected or peer has no identity".to_string(), false);
+            self.add_system_message("No peer connected or peer has no identity".to_string());
         }
     }
 
     fn set_peer_alias(&mut self, alias: &str) {
         if let Some(fingerprint) = &self.state.peer_fingerprint {
             if let Err(e) = self.message_db.set_identity_alias(fingerprint, alias) {
-                self.add_message(format!("Failed to set alias: {}", e), false);
+                self.add_system_message(format!("Failed to set alias: {}", e));
             } else {
                 self.state.peer_alias = Some(alias.to_string());
-                self.add_message(format!("Alias set to: {}", alias), false);
+                self.add_system_message(format!("Alias set to: {}", alias));
             }
         } else {
-            self.add_message("Cannot set alias: peer has no identity".to_string(), false);
+            self.add_system_message("Cannot set alias: peer has no identity".to_string());
         }
     }
 
     fn trust_current_peer(&mut self) {
         if let (Some(fingerprint), Some(identity_key)) = (&self.state.peer_fingerprint, &self.state.peer_identity_key) {
             if let Err(e) = self.message_db.trust_identity(fingerprint, identity_key, TrustLevel::Trusted, self.state.peer_alias.as_deref()) {
-                self.add_message(format!("Failed to trust peer: {}", e), false);
+                self.add_system_message(format!("Failed to trust peer: {}", e));
             } else {
                 self.state.identity_status = IdentityStatus::Verified;
-                self.add_message(format!("Peer {} is now permanently trusted", fingerprint), false);
+                self.add_system_message(format!("Peer {} is now permanently trusted", fingerprint));
             }
         } else {
-            self.add_message("Cannot trust: peer has no identity".to_string(), false);
+            self.add_system_message("Cannot trust: peer has no identity".to_string());
         }
     }
 
     fn show_status(&mut self) {
-        self.add_message(format!("Security level: {}", self.config.security_level.display_name()), false);
+        self.add_system_message(format!("Security level: {}", self.config.security_level.display_name()));
         if let Some(negotiated) = self.state.negotiated_security_level {
-            self.add_message(format!("Negotiated level: {}", negotiated.display_name()), false);
+            self.add_system_message(format!("Negotiated level: {}", negotiated.display_name()));
         }
-        self.add_message(format!("Identity status: {:?}", self.state.identity_status), false);
+        self.add_system_message(format!("Identity status: {:?}", self.state.identity_status));
         if let Some(peer_ip) = &self.state.peer_ip {
-            self.add_message(format!("Connected to: {}", peer_ip), false);
+            self.add_system_message(format!("Connected to: {}", peer_ip));
         }
     }
 
@@ -475,7 +506,7 @@ impl App {
                 IdentityStatus::Mismatch => " [⚠ IDENTITY MISMATCH!]",
                 IdentityStatus::None => "",
             };
-            self.add_message(format!("Connection established! Security: {}{}", negotiated_level.display_name(), identity_info), false);
+            self.add_system_message(format!("Connection established! Security: {}{}", negotiated_level.display_name(), identity_info));
             
             return Ok(Some(msg));
         }
@@ -501,6 +532,9 @@ impl App {
             let msg = NetworkMessage::disconnect(
                 format!("127.0.0.1:{}", self.config.port)
             );
+            // Reset local connection state after disconnecting
+            self.add_system_message("Disconnected from peer.".to_string());
+            self.reset_connection_state();
             return Ok(Some(msg));
         }
         Ok(None)
@@ -611,16 +645,16 @@ impl App {
                         IdentityStatus::Mismatch => " [⚠ IDENTITY MISMATCH!]",
                         IdentityStatus::None => "",
                     };
-                    self.add_message(format!("Connection established! Security: {}{}", negotiated_level.display_name(), identity_info), false);
+                    self.add_system_message(format!("Connection established! Security: {}{}", negotiated_level.display_name(), identity_info));
                 }
             }
             MessageType::ConnectionDecline => {
                 self.state.connection_status = ConnectionStatus::Online;
                 self.state.peer_ip = None;
-                self.add_message("Connection declined by peer".to_string(), false);
+                self.add_system_message("Connection declined by peer".to_string());
             }
             MessageType::Disconnect => {
-                self.add_message("Peer disconnected".to_string(), false);
+                self.add_system_message("Peer disconnected".to_string());
                 self.reset_connection_state();
             }
             MessageType::TextMessage => {
@@ -635,11 +669,11 @@ impl App {
                             }
                         }
                         
-                        self.add_message(decrypted_content, false);
+                        self.add_message(decrypted_content, MessageSource::Peer);
                         self.state.last_activity = Instant::now();
                     }
                     Err(e) => {
-                        self.add_message(format!("[Decryption error: {}]", e), false);
+                        self.add_system_message(format!("[Decryption error: {}]", e));
                     }
                 }
             }
@@ -663,11 +697,11 @@ impl App {
         self.crypto_manager.get_public_key_base64()
     }
 
-    fn add_message(&mut self, content: String, from_self: bool) {
+    fn add_message(&mut self, content: String, source: MessageSource) {
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.state.messages.push_back(ChatMessage {
             content,
-            from_self,
+            source,
             timestamp,
         });
 
@@ -675,6 +709,10 @@ impl App {
         while self.state.messages.len() > 100 {
             self.state.messages.pop_front();
         }
+    }
+
+    fn add_system_message(&mut self, content: String) {
+        self.add_message(content, MessageSource::System);
     }
 
     fn reload_current_peer_history(&mut self) {
@@ -693,14 +731,14 @@ impl App {
                 Ok(decrypted_content) => {
                     self.state.messages.push_back(ChatMessage {
                         content: decrypted_content,
-                        from_self: stored_msg.is_outgoing,
+                        source: if stored_msg.is_outgoing { MessageSource::Me } else { MessageSource::Peer },
                         timestamp: stored_msg.timestamp.clone(),
                     });
                 }
                 Err(_) => {
                     self.state.messages.push_back(ChatMessage {
                         content: "[Encrypted message - storage decryption failed]".to_string(),
-                        from_self: stored_msg.is_outgoing,
+                        source: if stored_msg.is_outgoing { MessageSource::Me } else { MessageSource::Peer },
                         timestamp: stored_msg.timestamp.clone(),
                     });
                 }
@@ -757,7 +795,7 @@ impl App {
     fn disconnect_with_timeout(&mut self) {
         self.state.previous_peer_ip = self.state.peer_ip.clone();
         self.reset_connection_state();
-        self.add_message("Session timed out due to inactivity".to_string(), false);
+        self.add_system_message("Session timed out due to inactivity".to_string());
         
         if let Some(prev_ip) = &self.state.previous_peer_ip {
             self.state.connect_input = prev_ip.clone();

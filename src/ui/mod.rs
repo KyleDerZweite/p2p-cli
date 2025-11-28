@@ -110,11 +110,19 @@ pub enum ConnectionStatus {
 // Re-export SecurityLevel from app module
 pub use crate::app::SecurityLevel;
 
+/// Source of a chat message
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageSource {
+    Me,
+    Peer,
+    System,
+}
+
 /// Chat message for display
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub content: String,
-    pub from_self: bool,
+    pub source: MessageSource,
     pub timestamp: String,
 }
 

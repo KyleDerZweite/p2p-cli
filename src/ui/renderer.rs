@@ -7,7 +7,7 @@ use ratatui::{
 };
 use std::time::Instant;
 
-use super::{UiState, InputMode, ConnectionStatus, SecurityLevel, IdentityStatus};
+use super::{UiState, InputMode, ConnectionStatus, SecurityLevel, IdentityStatus, MessageSource};
 
 /// Handles all UI rendering logic
 pub struct Renderer;
@@ -19,11 +19,14 @@ impl Renderer {
 
     /// Main render function - renders the entire UI
     pub fn render(&self, frame: &mut Frame, state: &UiState) {
+        // Adjust connection info height based on whether there's an incoming connection
+        let connection_height = if state.incoming_connection.is_some() { 7 } else { 5 };
+        
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),  // Connect field
-                Constraint::Length(5),  // Connection status / incoming connection
+                Constraint::Length(connection_height),  // Connection status / incoming connection
                 Constraint::Min(5),     // Messages
                 Constraint::Length(5),  // Message input
             ])
@@ -170,12 +173,12 @@ impl Renderer {
             
             // Show different options based on identity status
             let accept_text = match incoming.identity_status {
-                IdentityStatus::Verified => "'a' accept",
-                IdentityStatus::Unknown => "'a' accept & trust, 'o' accept once",
-                IdentityStatus::Mismatch => "'o' accept once (DANGEROUS!)",
-                IdentityStatus::None => "'a' accept",
+                IdentityStatus::Verified => "[a] Accept",
+                IdentityStatus::Unknown => "[a] Accept & Trust  [o] Accept Once",
+                IdentityStatus::Mismatch => "[o] Accept Once (DANGEROUS!)",
+                IdentityStatus::None => "[a] Accept",
             };
-            text_lines.push(format!("{}, 'd' decline", accept_text));
+            text_lines.push(format!(">>> {}  [d] Decline <<<", accept_text));
             
             if title.is_empty() {
                 let title_color = match incoming.identity_status {
@@ -223,10 +226,10 @@ impl Renderer {
             .skip(start_idx)
             .take(end_idx - start_idx)
             .map(|msg| {
-                let (prefix, style) = if msg.from_self {
-                    ("You: ", Style::default().fg(Color::Cyan))
-                } else {
-                    ("Peer: ", Style::default().fg(Color::White))
+                let (prefix, style) = match msg.source {
+                    MessageSource::Me => ("You: ", Style::default().fg(Color::Cyan)),
+                    MessageSource::Peer => ("Peer: ", Style::default().fg(Color::White)),
+                    MessageSource::System => ("System: ", Style::default().fg(Color::Yellow)),
                 };
 
                 // Extract just the time part (HH:MM:SS) from the timestamp
