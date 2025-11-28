@@ -20,8 +20,8 @@ pub struct IdentityManager {
 
 impl IdentityManager {
     /// Create or load identity manager
-    pub fn new(identity_path: &str) -> P2PResult<Self> {
-        let path = Path::new(identity_path);
+    pub fn new<P: AsRef<Path>>(identity_path: P) -> P2PResult<Self> {
+        let path = identity_path.as_ref();
         
         if path.exists() {
             Self::load_from_file(identity_path)
@@ -31,7 +31,7 @@ impl IdentityManager {
     }
 
     /// Generate a new identity key pair
-    fn generate_new(identity_path: &str) -> P2PResult<Self> {
+    fn generate_new<P: AsRef<Path>>(identity_path: P) -> P2PResult<Self> {
         let mut csprng = OsRng;
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key = signing_key.verifying_key();
@@ -39,7 +39,7 @@ impl IdentityManager {
         let manager = Self {
             signing_key,
             verifying_key,
-            identity_path: identity_path.to_string(),
+            identity_path: identity_path.as_ref().to_string_lossy().to_string(),
         };
 
         // Save the new identity
@@ -49,8 +49,8 @@ impl IdentityManager {
     }
 
     /// Load identity from file
-    fn load_from_file(identity_path: &str) -> P2PResult<Self> {
-        let key_bytes = fs::read(identity_path)
+    fn load_from_file<P: AsRef<Path>>(identity_path: P) -> P2PResult<Self> {
+        let key_bytes = fs::read(identity_path.as_ref())
             .map_err(|e| P2PError::IoError(e))?;
         
         if key_bytes.len() != 32 {
@@ -66,7 +66,7 @@ impl IdentityManager {
         Ok(Self {
             signing_key,
             verifying_key,
-            identity_path: identity_path.to_string(),
+            identity_path: identity_path.as_ref().to_string_lossy().to_string(),
         })
     }
 
@@ -165,6 +165,11 @@ impl IdentityManager {
     pub fn verifying_key(&self) -> &VerifyingKey {
         &self.verifying_key
     }
+
+    /// Get the identity file path (as a string) where this identity is stored
+    pub fn get_identity_path(&self) -> &str {
+        &self.identity_path
+    }
 }
 
 impl Drop for IdentityManager {
@@ -179,13 +184,12 @@ impl Drop for IdentityManager {
 mod tests {
     use super::*;
     use std::fs;
+    use tempfile;
 
     #[test]
     fn test_identity_generation() {
-        let temp_path = "/tmp/test_identity_key";
-        
-        // Clean up any existing file
-        let _ = fs::remove_file(temp_path);
+        let tmp = tempfile::tempdir().unwrap();
+        let temp_path = tmp.path().join("test_identity_key");
         
         let manager = IdentityManager::new(temp_path).unwrap();
         let fingerprint = manager.get_fingerprint();
@@ -194,41 +198,37 @@ mod tests {
         assert_eq!(fingerprint.len(), 19);
         assert!(fingerprint.chars().filter(|c| *c == '-').count() == 3);
         
-        // Clean up
-        let _ = fs::remove_file(temp_path);
+        // NamedTempFile will be cleaned up automatically
     }
 
     #[test]
     fn test_identity_persistence() {
-        let temp_path = "/tmp/test_identity_persist";
-        
-        // Clean up any existing file
-        let _ = fs::remove_file(temp_path);
+        let tmp = tempfile::tempdir().unwrap();
+        let temp_path = tmp.path().join("test_identity_persist");
         
         // Generate new identity
-        let manager1 = IdentityManager::new(temp_path).unwrap();
+        let manager1 = IdentityManager::new(&temp_path).unwrap();
         let fingerprint1 = manager1.get_fingerprint();
         let pubkey1 = manager1.get_public_key_base64();
         drop(manager1);
         
         // Load the same identity
-        let manager2 = IdentityManager::new(temp_path).unwrap();
+        let manager2 = IdentityManager::new(&temp_path).unwrap();
         let fingerprint2 = manager2.get_fingerprint();
         let pubkey2 = manager2.get_public_key_base64();
         
         assert_eq!(fingerprint1, fingerprint2);
         assert_eq!(pubkey1, pubkey2);
         
-        // Clean up
-        let _ = fs::remove_file(temp_path);
+        // NamedTempFile will be cleaned up automatically
     }
 
     #[test]
     fn test_signature_verification() {
-        let temp_path = "/tmp/test_identity_sig";
-        let _ = fs::remove_file(temp_path);
+        let tmp = tempfile::tempdir().unwrap();
+        let temp_path = tmp.path().join("test_identity_sig");
         
-        let manager = IdentityManager::new(temp_path).unwrap();
+        let manager = IdentityManager::new(&temp_path).unwrap();
         let message = b"Hello, World!";
         
         // Sign the message
@@ -243,16 +243,15 @@ mod tests {
         let is_valid_wrong = IdentityManager::verify_signature(&pubkey, b"Wrong message", &signature).unwrap();
         assert!(!is_valid_wrong);
         
-        // Clean up
-        let _ = fs::remove_file(temp_path);
+        // NamedTempFile will be cleaned up automatically
     }
 
     #[test]
     fn test_fingerprint_from_base64() {
-        let temp_path = "/tmp/test_identity_fp";
-        let _ = fs::remove_file(temp_path);
+        let tmp = tempfile::tempdir().unwrap();
+        let temp_path = tmp.path().join("test_identity_fp");
         
-        let manager = IdentityManager::new(temp_path).unwrap();
+        let manager = IdentityManager::new(&temp_path).unwrap();
         let pubkey = manager.get_public_key_base64();
         let fingerprint1 = manager.get_fingerprint();
         
@@ -260,7 +259,6 @@ mod tests {
         
         assert_eq!(fingerprint1, fingerprint2);
         
-        // Clean up
-        let _ = fs::remove_file(temp_path);
+        // NamedTempFile will be cleaned up automatically
     }
 }

@@ -11,6 +11,7 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use std::env;
+use directories::ProjectDirs;
 
 pub struct CryptoManager {
     private_key: RsaPrivateKey,
@@ -21,7 +22,14 @@ pub struct CryptoManager {
 impl CryptoManager {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         // Load .env file if it exists
+        // Let dotenv load a .env from current dir first, then load from platform-specific config dir
         dotenv::dotenv().ok();
+        if let Some(proj_dirs) = ProjectDirs::from("com", "kylederzweite", "p2p-cli") {
+            let env_path = proj_dirs.config_dir().join(".env");
+            if env_path.exists() {
+                let _ = dotenv::from_path(env_path);
+            }
+        }
         
         // Generate ephemeral RSA keys for this session
         let mut rng = OsRng;
@@ -54,9 +62,14 @@ impl CryptoManager {
                 let key = Aes256Gcm::generate_key(&mut AesRng);
                 let key_hex = hex::encode(&key);
                 
-                // Create or append to .env file
+                // Create or append to .env file in the platform config dir
                 let env_content = format!("DB_KEY={}\n", key_hex);
-                std::fs::write(".env", env_content)?;
+                if let Some(proj_dirs) = ProjectDirs::from("com", "kylederzweite", "p2p-cli") {
+                    let env_path = proj_dirs.config_dir().join(".env");
+                    std::fs::write(env_path, env_content)?;
+                } else {
+                    std::fs::write(".env", env_content)?;
+                }
                 
                 eprintln!("Generated new storage key in .env file");
                 Ok(key)

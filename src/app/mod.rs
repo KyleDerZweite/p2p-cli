@@ -11,6 +11,8 @@ use crate::crypto::{CryptoManager, IdentityManager};
 use crate::messagedb::{MessageDB, StoredMessage, TrustLevel};
 use crate::network::{NetworkMessage, MessageType, NetworkEvent};
 use crate::ui::{UiEvent, UiState, InputMode, ConnectionStatus, ChatMessage, IncomingConnection, IdentityStatus, MessageSource};
+use directories::ProjectDirs;
+use std::path::PathBuf;
 
 /// Main application logic coordinator
 pub struct App {
@@ -25,8 +27,20 @@ impl App {
     /// Create a new application instance
     pub fn new(config: AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let crypto_manager = CryptoManager::new()?;
-        let identity_manager = IdentityManager::new(".p2p_identity")?;
-        let message_db = MessageDB::new("messages.db")?;
+
+        // Resolve platform-specific directories for config and data
+        let proj_dirs = ProjectDirs::from("com", "kylederzweite", "p2p-cli")
+            .ok_or("Could not determine platform-specific project directories")?;
+        let config_dir = proj_dirs.config_dir();
+        let data_dir = proj_dirs.data_dir();
+        std::fs::create_dir_all(config_dir)?;
+        std::fs::create_dir_all(data_dir)?;
+
+        let identity_path: PathBuf = config_dir.join("p2p_identity");
+        let db_path: PathBuf = data_dir.join("messages.db");
+
+        let identity_manager = IdentityManager::new(identity_path)?;
+        let message_db = MessageDB::new(db_path)?;
         let mut state = AppState::new(config.port, config.security_level);
         
         // Set our fingerprint in state
@@ -235,11 +249,12 @@ impl App {
     }
 
     fn send_connection_request(&mut self) -> Result<Option<NetworkMessage>, Box<dyn std::error::Error>> {
-        let target_address = if self.state.connect_input.contains(':') {
-            self.state.connect_input.clone()
-        } else {
-            format!("{}:{}", self.state.connect_input, 8080)
+        let input = self.state.connect_input.trim();
+        let target_socket = match Self::parse_socket_addr(input, self.config.port) {
+            Some(addr) => addr,
+            None => return Ok(None),
         };
+        let target_address = target_socket.to_string();
 
         if target_address.parse::<std::net::SocketAddr>().is_ok() {
             let msg = if self.config.security_level.requires_identity() {
@@ -401,7 +416,7 @@ impl App {
         if let Some(our_fp) = &self.state.our_fingerprint {
             self.add_system_message(format!("Fingerprint: {}", our_fp));
         }
-        self.add_system_message(format!("Identity file: .p2p_identity"));
+        self.add_system_message(format!("Identity file: {}", self.identity_manager.get_identity_path()));
         self.add_system_message("".to_string());
         self.add_system_message("═══ ⚠ SECURITY WARNING ⚠ ═══".to_string());
         self.add_system_message("Your identity is stored in the .p2p_identity file.".to_string());
@@ -581,10 +596,44 @@ impl App {
 
     /// Check if an IP address is localhost
     fn is_localhost_ip(ip: &str) -> bool {
-        // Extract just the IP part (without port)
-        let ip_part = ip.split(':').next().unwrap_or(ip);
-        matches!(ip_part, "127.0.0.1" | "::1" | "localhost")
+        // Try parsing as socket addr first
+        if let Ok(sock) = ip.parse::<std::net::SocketAddr>() {
+            return sock.ip().is_loopback();
+        }
+        // Try parsing as ip-only
+        if let Ok(ipaddr) = ip.parse::<std::net::IpAddr>() {
+            return ipaddr.is_loopback();
+        }
+        // fallback to hostname check
+        ip.eq_ignore_ascii_case("localhost")
     }
+
+    /// Parse user input into a SocketAddr, handling IPv6 bracketed notation and hostname without port
+    fn parse_socket_addr(input: &str, default_port: u16) -> Option<std::net::SocketAddr> {
+        // Try as-is
+        if let Ok(addr) = input.parse::<std::net::SocketAddr>() {
+            return Some(addr);
+        }
+
+        // If it contains colon(s), it might be a bare IPv6 address
+        if input.contains(':') {
+            // Attempt to bracket and append port
+            let bracketed = format!("[{}]:{}", input.trim_matches(|c| c == '[' || c == ']'), default_port);
+            if let Ok(addr) = bracketed.parse::<std::net::SocketAddr>() {
+                return Some(addr);
+            }
+        } else {
+            // Hostname or IPv4 without port
+            let appended = format!("{}:{}", input, default_port);
+            if let Ok(addr) = appended.parse::<std::net::SocketAddr>() {
+                return Some(addr);
+            }
+        }
+
+        None
+    }
+
+    
 
     /// Verify peer identity for TOFU mode
     /// Returns (IdentityStatus, is_localhost)
@@ -888,5 +937,43 @@ impl App {
         self.state.pending_ping = None;
         self.state.input_mode = InputMode::ConnectField;
         self.state.messages.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ipv4_without_port() {
+        let addr = App::parse_socket_addr("127.0.0.1", 8080).unwrap();
+        assert_eq!(addr.to_string(), "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn parse_ipv4_with_port() {
+        let addr = App::parse_socket_addr("127.0.0.1:9000", 8080).unwrap();
+        assert_eq!(addr.to_string(), "127.0.0.1:9000");
+    }
+
+    #[test]
+    fn parse_ipv6_without_port() {
+        let addr = App::parse_socket_addr("::1", 8080).unwrap();
+        assert_eq!(addr.to_string(), "[::1]:8080");
+    }
+
+    #[test]
+    fn parse_ipv6_with_port_bracketed() {
+        let addr = App::parse_socket_addr("[::1]:9000", 8080).unwrap();
+        assert_eq!(addr.to_string(), "[::1]:9000");
+    }
+
+    #[test]
+    fn is_localhost_checks() {
+        assert!(App::is_localhost_ip("127.0.0.1"));
+        assert!(App::is_localhost_ip("127.0.0.1:8080"));
+        assert!(App::is_localhost_ip("::1"));
+        assert!(App::is_localhost_ip("[::1]:8080"));
+        assert!(App::is_localhost_ip("localhost"));
     }
 }

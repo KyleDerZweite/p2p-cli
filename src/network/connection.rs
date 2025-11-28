@@ -56,7 +56,8 @@ impl ConnectionManager {
         let event_sender = self.event_sender.clone();
         
         let handle = tokio::spawn(async move {
-            match TcpListener::bind(format!("0.0.0.0:{}", port)).await {
+            // Try to bind IPv6 (dual-stack) first, fall back to IPv4 if necessary
+            match TcpListener::bind(format!("[::]:{}", port)).await {
                 Ok(listener) => {
                     let _ = event_sender.send(NetworkEvent::ListenerStarted(port));
                     
@@ -77,8 +78,32 @@ impl ConnectionManager {
                         }
                     }
                 }
-                Err(e) => {
-                    let _ = event_sender.send(NetworkEvent::ListenerFailed(e.to_string()));
+                Err(_) => {
+                    // Fallback to IPv4 only
+                    match TcpListener::bind(format!("0.0.0.0:{}", port)).await {
+                        Ok(listener) => {
+                            let _ = event_sender.send(NetworkEvent::ListenerStarted(port));
+                            loop {
+                                match listener.accept().await {
+                                    Ok((stream, addr)) => {
+                                        let event_sender_clone = event_sender.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = Self::handle_incoming_connection(stream, addr, event_sender_clone).await {
+                                                eprintln!("Error handling incoming connection: {}", e);
+                                            }
+                                        });
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error accepting connection: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = event_sender.send(NetworkEvent::ListenerFailed(e.to_string()));
+                        }
+                    }
                 }
             }
         });
