@@ -65,7 +65,9 @@ impl CryptoManager {
                 // Create or append to .env file in the platform config dir
                 let env_content = format!("DB_KEY={}\n", key_hex);
                 if let Some(proj_dirs) = ProjectDirs::from("com", "kylederzweite", "p2p-cli") {
-                    let env_path = proj_dirs.config_dir().join(".env");
+                    let config_dir = proj_dirs.config_dir();
+                    std::fs::create_dir_all(config_dir)?;
+                    let env_path = config_dir.join(".env");
                     std::fs::write(env_path, env_content)?;
                 } else {
                     std::fs::write(".env", env_content)?;
