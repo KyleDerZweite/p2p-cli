@@ -1,6 +1,6 @@
 # P2P CLI
 
-![Rust](https://github.com/KyleDerZweite/p2p-cli/workflows/Rust/badge.svg)
+![Rust](https://github.com/KyleDerZweite/p2p-cli/workflows/CI/badge.svg)
 
 A modern, secure, terminal-based peer-to-peer messenger written in Rust. Features hybrid RSA/AES encryption, tiered security levels (Quick→Maximum), persistent encrypted message history, and a clean TUI interface. No servers, no middlemen—just direct, encrypted communication between peers.
 

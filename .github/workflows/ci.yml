@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ master, windows-compatibility ]
+    branches: [ master ]
   pull_request:
     branches: [ master ]
 
@@ -15,14 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          profile: minimal
-          override: true
-      - name: Install dependencies
-        run: |
-          rustup component add clippy || true
+          components: clippy
       - name: Build
         run: cargo build --verbose
       - name: Run tests
