@@ -20,7 +20,7 @@ const DEFAULT_PORT: u16 = 8080;
 #[derive(Parser, Debug)]
 #[command(name = "p2p-cli")]
 #[command(author = "KyleDerZweite")]
-#[command(version = "0.2.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "A modern, secure, terminal-based peer-to-peer messenger", long_about = None)]
 #[command(after_help = "SECURITY LEVELS:
   0, quick    Encrypted + signed; approve peers per session

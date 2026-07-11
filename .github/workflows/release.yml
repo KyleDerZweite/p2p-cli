@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: p2p-cli
+            asset: p2p-cli-linux-x86_64
+          - os: windows-latest
+            binary: p2p-cli.exe
+            asset: p2p-cli-windows-x86_64.exe
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test --release
+      - name: Upload release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "target/release/${{ matrix.binary }}" "${{ matrix.asset }}"
+          gh release upload "${{ github.ref_name }}" "${{ matrix.asset }}" --clobber
