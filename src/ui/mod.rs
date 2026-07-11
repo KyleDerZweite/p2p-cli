@@ -24,6 +24,8 @@ pub enum UiEvent {
     DeclineConnection,
     /// Accept connection but only for this session (don't permanently trust)
     AcceptConnectionOnce,
+    /// Copy our shareable address to the system clipboard
+    CopyAddress,
     CharInput(char),
     Resize(u16, u16),
     SecurityLevelSelect(SecurityLevel),

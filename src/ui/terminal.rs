@@ -1,5 +1,4 @@
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -17,7 +16,10 @@ impl TerminalManager {
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        // Mouse capture is intentionally NOT enabled: the app has no mouse
+        // interactions, and capture would break the terminal's native
+        // select-to-copy for addresses and fingerprints
+        execute!(stdout, EnterAlternateScreen)?;
 
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
@@ -43,25 +45,30 @@ impl TerminalManager {
     /// Clean up terminal and restore normal mode
     pub fn cleanup(mut self) -> Result<(), Box<dyn std::error::Error>> {
         disable_raw_mode()?;
-        execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
         self.terminal.show_cursor()?;
         Ok(())
     }
+}
+
+/// Copy text to the system clipboard via the OSC 52 escape sequence.
+/// Supported by most modern terminals (incl. over SSH); harmlessly
+/// ignored by terminals that don't support it.
+pub fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use base64::Engine;
+    use std::io::Write;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    let mut stdout = io::stdout();
+    write!(stdout, "\x1b]52;c;{}\x07", encoded)?;
+    stdout.flush()?;
+    Ok(())
 }
 
 impl Drop for TerminalManager {
     fn drop(&mut self) {
         // Ensure cleanup happens even if cleanup() wasn't called
         let _ = disable_raw_mode();
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        );
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
         let _ = self.terminal.show_cursor();
     }
 }

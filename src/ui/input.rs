@@ -56,6 +56,10 @@ impl InputHandler {
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(UiEvent::ShowSecuritySelection)
             }
+            // Ctrl+Y: Copy shareable address to clipboard
+            KeyCode::Char('y') if modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(UiEvent::CopyAddress)
+            }
             // Navigation and basic input
             KeyCode::Tab => Some(UiEvent::Tab),
             KeyCode::Enter => Some(UiEvent::Enter),

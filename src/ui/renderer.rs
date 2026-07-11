@@ -451,7 +451,7 @@ impl Renderer {
         } else if state.show_security_selection {
             " F1-F4 select level · Esc close"
         } else {
-            " Tab switch field · Enter send/connect · Ctrl+S security · Ctrl+D disconnect · Ctrl+C quit"
+            " Tab switch field · Enter send/connect · Ctrl+Y copy address · Ctrl+S security · Ctrl+D disconnect · Ctrl+C quit"
         };
         let widget = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(widget, area);

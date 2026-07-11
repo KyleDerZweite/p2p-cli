@@ -122,6 +122,10 @@ impl App {
                     Ok(None)
                 }
             }
+            UiEvent::CopyAddress => {
+                self.copy_shareable_address();
+                Ok(None)
+            }
             UiEvent::Disconnect => self.send_disconnect_notification(),
             UiEvent::Quit => {
                 self.state.should_quit = true;
@@ -611,6 +615,7 @@ impl App {
         self.add_system_message("Ctrl+C           - Quit application".to_string());
         self.add_system_message("Ctrl+D           - Disconnect from peer".to_string());
         self.add_system_message("Ctrl+S           - Open security level selection".to_string());
+        self.add_system_message("Ctrl+Y           - Copy shareable address to clipboard".to_string());
         self.add_system_message("Tab              - Switch between input fields".to_string());
         self.add_system_message("PageUp/Down      - Scroll messages".to_string());
         self.add_system_message("Ctrl+Home/End    - Scroll to top/bottom".to_string());
@@ -651,6 +656,31 @@ impl App {
         self.add_system_message("".to_string());
         self.add_system_message("Your fingerprint is SAFE to share - it's public.".to_string());
         self.add_system_message("Your identity FILE is PRIVATE - never share it!".to_string());
+    }
+
+    /// Copy the most widely reachable address (public > LAN > localhost)
+    /// to the system clipboard via OSC 52
+    fn copy_shareable_address(&mut self) {
+        let port = self.config.port;
+        let (address, kind) = match (&self.state.public_ip, &self.state.local_ip) {
+            (Some(public), _) => (format!("{}:{}", public, port), "Internet"),
+            (None, Some(local)) => (format!("{}:{}", local, port), "LAN"),
+            (None, None) => (format!("127.0.0.1:{}", port), "localhost"),
+        };
+        match crate::ui::terminal::copy_to_clipboard(&address) {
+            Ok(()) => {
+                self.add_system_message(format!(
+                    "Copied {} address {} to clipboard (if your terminal supports OSC 52; otherwise select it with the mouse)",
+                    kind, address
+                ));
+            }
+            Err(e) => {
+                self.add_system_message(format!(
+                    "Clipboard copy failed ({}). Address: {}",
+                    e, address
+                ));
+            }
+        }
     }
 
     fn show_my_addresses(&mut self) {

@@ -97,6 +97,7 @@ All levels have encrypted, integrity-protected transport and signed identities. 
 | `Ctrl+C` | Quit application |
 | `Ctrl+D` | Disconnect from peer |
 | `Ctrl+S` | Open security level selection |
+| `Ctrl+Y` | Copy your shareable address to the clipboard |
 | `F1-F4` or `0-3` | Select security level (in the selection popup) |
 | `PageUp/Down` | Scroll messages |
 | `Ctrl+Home/End` | Scroll to top/bottom |
