@@ -15,6 +15,8 @@ pub enum NetworkEvent {
     ConnectionEstablished(SocketAddr),
     ConnectionLost(SocketAddr),
     ConnectionFailed(SocketAddr, String),
+    /// An inbound connection reached us but failed before yielding a message
+    IncomingFailed(SocketAddr, String),
     ListenerStarted(u16),
     ListenerFailed(String),
 }

@@ -83,13 +83,20 @@ impl ConnectionManager {
                 let events = events.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    if let Ok(message) = timeout(IO_TIMEOUT, receive_noise_message(stream))
+                    match timeout(IO_TIMEOUT, receive_noise_message(stream))
                         .await
-                        .unwrap_or(Err("connection timed out".into()))
+                        .unwrap_or(Err("timed out during encryption handshake — the peer reached us over TCP but never completed the handshake".into()))
                     {
-                        let _ = events
-                            .send(NetworkEvent::MessageReceived(message, addr))
-                            .await;
+                        Ok(message) => {
+                            let _ = events
+                                .send(NetworkEvent::MessageReceived(message, addr))
+                                .await;
+                        }
+                        Err(error) => {
+                            let _ = events
+                                .send(NetworkEvent::IncomingFailed(addr, error.to_string()))
+                                .await;
+                        }
                     }
                 });
             }
@@ -105,15 +112,9 @@ impl ConnectionManager {
     async fn send_message(&self, message: NetworkMessage, target: SocketAddr) {
         let events = self.event_sender.clone();
         tokio::spawn(async move {
-            let result = timeout(IO_TIMEOUT, send_noise_message(message, target)).await;
-            if !matches!(result, Ok(Ok(()))) {
-                let reason = match result {
-                    Ok(Err(e)) => e.to_string(),
-                    Err(_) => "connection timed out".into(),
-                    _ => unreachable!(),
-                };
+            if let Err(reason) = send_noise_message(message, target).await {
                 let _ = events
-                    .send(NetworkEvent::ConnectionFailed(target, reason))
+                    .send(NetworkEvent::ConnectionFailed(target, reason.to_string()))
                     .await;
             }
         });
@@ -128,24 +129,84 @@ async fn send_noise_message(
     if plaintext.len() > MAX_PLAINTEXT {
         return Err("message exceeds protocol limit".into());
     }
-    let mut stream = TcpStream::connect(target).await?;
-    let builder = snow::Builder::new(NOISE_PATTERN.parse()?);
-    let keypair = builder.generate_keypair()?;
-    let mut noise = builder
-        .local_private_key(&keypair.private)?
-        .build_initiator()?;
-    let mut buf = vec![0u8; MAX_NOISE_FRAME];
-    let n = noise.write_message(&[], &mut buf)?;
-    write_frame(&mut stream, &buf[..n]).await?;
-    let reply = read_frame(&mut stream).await?;
-    noise.read_message(&reply, &mut buf)?;
-    let n = noise.write_message(&[], &mut buf)?;
-    write_frame(&mut stream, &buf[..n]).await?;
-    let mut transport = noise.into_transport_mode()?;
-    let n = transport.write_message(&plaintext, &mut buf)?;
-    write_frame(&mut stream, &buf[..n]).await?;
-    stream.shutdown().await?;
-    Ok(())
+
+    // Stage 1: TCP reachability. A failure here means the peer's port is
+    // closed, not forwarded, or firewalled — nothing p2p-cli-specific ran yet.
+    let mut stream = match timeout(IO_TIMEOUT, TcpStream::connect(target)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => {
+            return Err(format!(
+                "[stage 1/3: TCP connect] could not reach {}: {}. The port is closed or refused — check that the peer app is running and the port is forwarded on their router",
+                target, e
+            )
+            .into())
+        }
+        Err(_) => {
+            return Err(format!(
+                "[stage 1/3: TCP connect] no response from {} after {}s. Packets are being dropped — the port is likely not forwarded, or a firewall is silently blocking it",
+                target,
+                IO_TIMEOUT.as_secs()
+            )
+            .into())
+        }
+    };
+
+    // Stage 2: Noise handshake. Reaching this stage proves TCP connectivity,
+    // so failures point at the peer application, not the network path.
+    let handshake = async {
+        let builder = snow::Builder::new(NOISE_PATTERN.parse()?);
+        let keypair = builder.generate_keypair()?;
+        let mut noise = builder
+            .local_private_key(&keypair.private)?
+            .build_initiator()?;
+        let mut buf = vec![0u8; MAX_NOISE_FRAME];
+        let n = noise.write_message(&[], &mut buf)?;
+        write_frame(&mut stream, &buf[..n]).await?;
+        let reply = read_frame(&mut stream).await?;
+        noise.read_message(&reply, &mut buf)?;
+        let n = noise.write_message(&[], &mut buf)?;
+        write_frame(&mut stream, &buf[..n]).await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(noise.into_transport_mode()?)
+    };
+    let mut transport = match timeout(IO_TIMEOUT, handshake).await {
+        Ok(Ok(transport)) => transport,
+        Ok(Err(e)) => {
+            return Err(format!(
+                "[stage 2/3: encryption handshake] TCP connected to {} but the handshake failed: {}. Something is listening on that port, but it may not be p2p-cli or is an incompatible version",
+                target, e
+            )
+            .into())
+        }
+        Err(_) => {
+            return Err(format!(
+                "[stage 2/3: encryption handshake] TCP connected to {} but the handshake timed out. Something accepted the connection but never completed the handshake — possibly a different service on that port",
+                target
+            )
+            .into())
+        }
+    };
+
+    // Stage 3: encrypted delivery.
+    let deliver = async {
+        let mut buf = vec![0u8; MAX_NOISE_FRAME];
+        let n = transport.write_message(&plaintext, &mut buf)?;
+        write_frame(&mut stream, &buf[..n]).await?;
+        stream.shutdown().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    };
+    match timeout(IO_TIMEOUT, deliver).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!(
+            "[stage 3/3: message delivery] handshake with {} succeeded but sending the message failed: {}",
+            target, e
+        )
+        .into()),
+        Err(_) => Err(format!(
+            "[stage 3/3: message delivery] handshake with {} succeeded but sending the message timed out",
+            target
+        )
+        .into()),
+    }
 }
 
 async fn receive_noise_message(
@@ -218,6 +279,43 @@ mod tests {
         let received = receiver.await.unwrap();
         assert_eq!(received.id, expected_id);
         assert_eq!(received.content.len(), 16 * 1024);
+    }
+
+    #[tokio::test]
+    async fn reports_tcp_stage_when_port_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let message = NetworkMessage::new(
+            MessageType::TextMessage,
+            "127.0.0.1:8080".into(),
+            "hi".into(),
+            None,
+            None,
+        );
+        let error = send_noise_message(message, addr).await.unwrap_err();
+        assert!(error.to_string().contains("stage 1/3"), "{}", error);
+    }
+
+    #[tokio::test]
+    async fn reports_handshake_stage_when_peer_speaks_garbage() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream.write_all(&[0, 0, 0, 4, 1, 2, 3, 4]).await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+        });
+        let message = NetworkMessage::new(
+            MessageType::TextMessage,
+            "127.0.0.1:8080".into(),
+            "hi".into(),
+            None,
+            None,
+        );
+        let error = send_noise_message(message, addr).await.unwrap_err();
+        assert!(error.to_string().contains("stage 2/3"), "{}", error);
     }
 
     #[tokio::test]

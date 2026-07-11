@@ -202,6 +202,12 @@ impl App {
                     );
                 }
             }
+            NetworkEvent::IncomingFailed(addr, error) => {
+                self.add_system_message(format!(
+                    "Incoming connection from {} failed: {} (their TCP packets do reach you — your port forwarding works)",
+                    addr, error
+                ));
+            }
             _ => {}
         }
     }
