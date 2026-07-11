@@ -1,8 +1,8 @@
-use std::time::Instant;
 use std::collections::VecDeque;
+use std::time::Instant;
 use uuid::Uuid;
 
-use crate::ui::{InputMode, ConnectionStatus, ChatMessage, IncomingConnection, IdentityStatus};
+use crate::ui::{ChatMessage, ConnectionStatus, IdentityStatus, IncomingConnection, InputMode};
 
 /// Application state that persists between UI updates
 #[derive(Debug)]
@@ -52,6 +52,12 @@ pub struct AppState {
     /// Whether the connection is via localhost (127.0.0.1 or ::1)
     pub is_localhost: bool,
 
+    // Own addresses (for sharing with peers out-of-band)
+    /// Our LAN IP address, if detectable
+    pub local_ip: Option<String>,
+    /// Our public IP address, if the lookup succeeded
+    pub public_ip: Option<String>,
+
     // Scrolling
     /// Current scroll offset in messages (0 = showing latest)
     pub message_scroll: usize,
@@ -89,6 +95,8 @@ impl AppState {
             peer_alias: None,
             identity_status: IdentityStatus::None,
             is_localhost: false,
+            local_ip: None,
+            public_ip: None,
             // Scrolling
             message_scroll: 0,
         }

@@ -1,6 +1,6 @@
+use crate::app::SecurityLevel;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::app::SecurityLevel;
 
 /// Network message types that can be sent between peers
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +87,11 @@ impl NetworkMessage {
     }
 
     /// Create a connection request message
-    pub fn connection_request(from_ip: String, public_key: String, security_level: SecurityLevel) -> Self {
+    pub fn connection_request(
+        from_ip: String,
+        public_key: String,
+        security_level: SecurityLevel,
+    ) -> Self {
         Self::new(
             MessageType::ConnectionRequest,
             from_ip,
@@ -99,8 +103,8 @@ impl NetworkMessage {
 
     /// Create a connection request with identity (for TOFU mode)
     pub fn connection_request_with_identity(
-        from_ip: String, 
-        public_key: String, 
+        from_ip: String,
+        public_key: String,
         security_level: SecurityLevel,
         identity_key: String,
         identity_fingerprint: String,
@@ -119,7 +123,11 @@ impl NetworkMessage {
     }
 
     /// Create a connection accept message
-    pub fn connection_accept(from_ip: String, public_key: String, security_level: SecurityLevel) -> Self {
+    pub fn connection_accept(
+        from_ip: String,
+        public_key: String,
+        security_level: SecurityLevel,
+    ) -> Self {
         Self::new(
             MessageType::ConnectionAccept,
             from_ip,
@@ -131,8 +139,8 @@ impl NetworkMessage {
 
     /// Create a connection accept with identity (for TOFU mode)
     pub fn connection_accept_with_identity(
-        from_ip: String, 
-        public_key: String, 
+        from_ip: String,
+        public_key: String,
         security_level: SecurityLevel,
         identity_key: String,
         identity_fingerprint: String,
@@ -174,24 +182,12 @@ impl NetworkMessage {
 
     /// Create a text message
     pub fn text_message(from_ip: String, content: String) -> Self {
-        Self::new(
-            MessageType::TextMessage,
-            from_ip,
-            content,
-            None,
-            None,
-        )
+        Self::new(MessageType::TextMessage, from_ip, content, None, None)
     }
 
     /// Create a ping message
     pub fn ping(from_ip: String) -> Self {
-        Self::new(
-            MessageType::Ping,
-            from_ip,
-            "ping".to_string(),
-            None,
-            None,
-        )
+        Self::new(MessageType::Ping, from_ip, "ping".to_string(), None, None)
     }
 
     /// Create a ping response message
@@ -215,5 +211,13 @@ impl NetworkMessage {
     /// Deserialize a message from JSON
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
+    }
+
+    /// Stable bytes signed by the long-term identity. The signature field is
+    /// deliberately cleared to avoid signing itself.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let mut unsigned = self.clone();
+        unsigned.identity_signature = None;
+        serde_json::to_vec(&unsigned)
     }
 }

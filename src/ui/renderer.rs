@@ -7,7 +7,7 @@ use ratatui::{
 };
 use std::time::Instant;
 
-use super::{UiState, InputMode, ConnectionStatus, SecurityLevel, IdentityStatus, MessageSource};
+use super::{ConnectionStatus, IdentityStatus, InputMode, MessageSource, SecurityLevel, UiState};
 
 /// Handles all UI rendering logic
 pub struct Renderer;
@@ -22,23 +22,25 @@ impl Renderer {
         // Adjust connection info height based on whether there's an incoming connection
         // Base height: 7 lines (5 content lines + 2 for borders)
         // With incoming connection: 9 lines (extra for incoming prompt)
-        let connection_height = if state.incoming_connection.is_some() { 7 } else { 7 };
-        
+        let connection_height = 7;
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Connect field
-                Constraint::Length(connection_height),  // Connection status / incoming connection
-                Constraint::Min(5),     // Messages
-                Constraint::Length(5),  // Message input
+                Constraint::Length(3),                 // Connect field
+                Constraint::Length(connection_height), // Connection status / incoming connection
+                Constraint::Min(5),                    // Messages
+                Constraint::Length(5),                 // Message input
+                Constraint::Length(1),                 // Shortcut footer
             ])
-            .split(frame.size());
+            .split(frame.area());
 
         self.render_connect_field(frame, chunks[0], state);
         self.render_connection_info(frame, chunks[1], state);
         self.render_messages(frame, chunks[2], state);
         self.render_message_input(frame, chunks[3], state);
-        
+        self.render_footer(frame, chunks[4], state);
+
         // Render security selection overlay if needed
         if state.show_security_selection {
             self.render_security_selection(frame, state);
@@ -46,7 +48,12 @@ impl Renderer {
     }
 
     /// Render the connection input field with security level indicator
-    fn render_connect_field(&self, frame: &mut Frame, area: ratatui::layout::Rect, state: &UiState) {
+    fn render_connect_field(
+        &self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        state: &UiState,
+    ) {
         let connect_style = if state.input_mode == InputMode::ConnectField {
             Style::default().fg(Color::Yellow)
         } else {
@@ -66,21 +73,25 @@ impl Renderer {
         };
 
         let title = format!(
-            "Connect to IP:PORT (Listening on: {}){} (Ctrl+C=quit, Ctrl+D=disconnect, Ctrl+S=security)",
-            state.port,
-            security_indicator
+            "Connect to IP:PORT (listening on port {}){}",
+            state.port, security_indicator
         );
 
         let widget = Paragraph::new(state.connect_input.as_str())
             .style(connect_style)
             .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: true });
-        
+
         frame.render_widget(widget, area);
     }
 
     /// Render connection status and incoming connection info
-    fn render_connection_info(&self, frame: &mut Frame, area: ratatui::layout::Rect, state: &UiState) {
+    fn render_connection_info(
+        &self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        state: &UiState,
+    ) {
         let mut text_lines = Vec::new();
         let mut title = String::new();
         let mut style = Style::default();
@@ -91,49 +102,71 @@ impl Renderer {
                 let connection_duration = Instant::now().duration_since(connected_at);
                 let mins = connection_duration.as_secs() / 60;
                 let secs = connection_duration.as_secs() % 60;
-                
+
                 // Add LOCAL badge if localhost connection
-                let local_badge = if state.is_localhost { " [🏠 LOCAL]" } else { "" };
-                title = format!("Connected to {}{} ({}m {}s)", peer_ip, local_badge, mins, secs);
-                style = if state.is_localhost { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::Blue) };
-                
+                let local_badge = if state.is_localhost {
+                    " [🏠 LOCAL]"
+                } else {
+                    ""
+                };
+                title = format!(
+                    "Connected to {}{} ({}m {}s)",
+                    peer_ip, local_badge, mins, secs
+                );
+                style = if state.is_localhost {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::Blue)
+                };
+
                 // Show session timeout countdown (assuming 300 second timeout)
-                let time_since_activity = Instant::now().duration_since(state.last_activity).as_secs();
+                let time_since_activity =
+                    Instant::now().duration_since(state.last_activity).as_secs();
                 let time_remaining = 300u64.saturating_sub(time_since_activity);
                 let timeout_mins = time_remaining / 60;
                 let timeout_secs = time_remaining % 60;
-                
+
                 if time_remaining > 0 {
-                    text_lines.push(format!("Session expires in {}m {}s", timeout_mins, timeout_secs));
+                    text_lines.push(format!(
+                        "Session expires in {}m {}s",
+                        timeout_mins, timeout_secs
+                    ));
                 } else {
                     text_lines.push("Session expiring...".to_string());
                 }
-                
+
                 // Show security level info
                 if let Some(negotiated_level) = state.negotiated_security_level {
                     if let Some(peer_level) = state.peer_security_level {
-                        text_lines.push(format!("Security: {} (You: {}, Peer: {})", 
-                            negotiated_level.display_name(), 
+                        text_lines.push(format!(
+                            "Security: {} (You: {}, Peer: {})",
+                            negotiated_level.display_name(),
                             state.security_level.display_name(),
-                            peer_level.display_name()));
+                            peer_level.display_name()
+                        ));
                     } else {
                         text_lines.push(format!("Security: {}", negotiated_level.display_name()));
                     }
                 }
-                
+
                 // Show identity info (TOFU) with special handling for local/self and cloned identity
                 match state.identity_status {
                     IdentityStatus::LocalSelf => {
-                        text_lines.push("Identity: 🏠 LOCAL/SELF (same identity via localhost)".to_string());
+                        text_lines.push(
+                            "Identity: 🏠 LOCAL/SELF (same identity via localhost)".to_string(),
+                        );
                     }
                     IdentityStatus::ClonedIdentity => {
                         text_lines.push("Identity: ⚠ CLONED IDENTITY DETECTED!".to_string());
-                        text_lines.push("WARNING: Someone may have stolen your identity file!".to_string());
+                        text_lines.push(
+                            "WARNING: Someone may have stolen your identity file!".to_string(),
+                        );
                     }
                     IdentityStatus::None => {
                         // In QUICK MODE, still show LOCAL indicator if localhost
                         if state.is_localhost {
-                            text_lines.push("Identity: 🏠 LOCAL (localhost connection)".to_string());
+                            text_lines
+                                .push("Identity: 🏠 LOCAL (localhost connection)".to_string());
                         }
                     }
                     _ => {
@@ -147,16 +180,20 @@ impl Renderer {
                                 IdentityStatus::ClonedIdentity => "⚠",
                             };
                             let alias = state.peer_alias.as_deref().unwrap_or("unknown");
-                            text_lines.push(format!("Identity: {} {} [{}]", status_icon, alias, peer_fp));
+                            text_lines
+                                .push(format!("Identity: {} {} [{}]", status_icon, alias, peer_fp));
                         }
                     }
                 }
-                
+
                 // Show ping status
                 if let Some(last_ping) = state.last_ping_sent {
                     let ping_age = Instant::now().duration_since(last_ping).as_secs();
                     if state.pending_ping {
-                        text_lines.push(format!("Ping sent {}s ago (waiting for response)", ping_age));
+                        text_lines.push(format!(
+                            "Ping sent {}s ago (waiting for response)",
+                            ping_age
+                        ));
                     } else {
                         text_lines.push(format!("Last ping: {}s ago", ping_age));
                     }
@@ -170,16 +207,14 @@ impl Renderer {
             if !text_lines.is_empty() {
                 text_lines.push("".to_string()); // Empty line separator
             }
-            
+
             // Show identity status for incoming connection
             let identity_info = match incoming.identity_status {
                 IdentityStatus::Verified => {
                     let alias = incoming.identity_alias.as_deref().unwrap_or("known");
                     format!(" [✓ TRUSTED: {}]", alias)
                 }
-                IdentityStatus::LocalSelf => {
-                    " [🏠 LOCAL/SELF]".to_string()
-                }
+                IdentityStatus::LocalSelf => " [🏠 LOCAL/SELF]".to_string(),
                 IdentityStatus::ClonedIdentity => {
                     " [⚠ CLONED IDENTITY - YOUR IDENTITY WAS STOLEN!]".to_string()
                 }
@@ -200,13 +235,21 @@ impl Renderer {
                 }
                 IdentityStatus::Mismatch => " [⚠ IDENTITY MISMATCH - DANGER!]".to_string(),
             };
-            
-            text_lines.push(format!("Incoming from {}{}", incoming.from_ip, identity_info));
+
+            text_lines.push(format!(
+                "Incoming from {}{}",
+                incoming.from_ip, identity_info
+            ));
             text_lines.push(format!("({}s remaining)", remaining));
-            text_lines.push(format!("Security: {} → {}", 
+            text_lines.push(format!(
+                "Security: {} → {}",
                 incoming.security_level.display_name(),
-                state.security_level.negotiate_with(incoming.security_level).display_name()));
-            
+                state
+                    .security_level
+                    .negotiate_with(incoming.security_level)
+                    .display_name()
+            ));
+
             // Show different options based on identity status
             let accept_text = match incoming.identity_status {
                 IdentityStatus::Verified => "[a] Accept",
@@ -215,11 +258,15 @@ impl Renderer {
                 IdentityStatus::Unknown => "[a] Accept & Trust  [o] Accept Once",
                 IdentityStatus::Mismatch => "[o] Accept Once (DANGEROUS!)",
                 IdentityStatus::None => {
-                    if incoming.is_localhost { "[a] Accept (local)" } else { "[a] Accept" }
-                },
+                    if incoming.is_localhost {
+                        "[a] Accept (local)"
+                    } else {
+                        "[a] Accept"
+                    }
+                }
             };
             text_lines.push(format!(">>> {}  [d] Decline <<<", accept_text));
-            
+
             if title.is_empty() {
                 let title_color = match incoming.identity_status {
                     IdentityStatus::Verified => Color::Green,
@@ -228,18 +275,31 @@ impl Renderer {
                     IdentityStatus::Unknown => Color::Yellow,
                     IdentityStatus::Mismatch => Color::Red,
                     IdentityStatus::None => {
-                        if incoming.is_localhost { Color::Cyan } else { Color::Green }
-                    },
+                        if incoming.is_localhost {
+                            Color::Cyan
+                        } else {
+                            Color::Green
+                        }
+                    }
                 };
                 title = "Incoming Connection".to_string();
                 style = Style::default().fg(title_color);
             }
         }
 
-        // Default state
+        // Default state: show shareable addresses so a peer can reach us
         if title.is_empty() {
-            title = "Connection Status".to_string();
-            text_lines.push("No active connection".to_string());
+            title = "Not connected - share an address below so a peer can reach you".to_string();
+            if let Some(public) = &state.public_ip {
+                text_lines.push(format!(
+                    "Internet: {}:{} (share via another messenger; both sides need port {} open/forwarded)",
+                    public, state.port, state.port
+                ));
+            }
+            if let Some(local) = &state.local_ip {
+                text_lines.push(format!("LAN: {}:{} (same network)", local, state.port));
+            }
+            text_lines.push(format!("Localhost: 127.0.0.1:{}", state.port));
             if let Some(our_fp) = &state.our_fingerprint {
                 text_lines.push(format!("Your fingerprint: {}", our_fp));
             }
@@ -259,13 +319,14 @@ impl Renderer {
     fn render_messages(&self, frame: &mut Frame, area: ratatui::layout::Rect, state: &UiState) {
         let total_messages = state.messages.len();
         let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
-        
+
         // Calculate which messages to show based on scroll position
         // scroll = 0 means show latest, scroll > 0 means show older
         let end_idx = total_messages.saturating_sub(state.message_scroll);
         let start_idx = end_idx.saturating_sub(visible_height);
-        
-        let visible_messages: Vec<ListItem> = state.messages
+
+        let visible_messages: Vec<ListItem> = state
+            .messages
             .iter()
             .skip(start_idx)
             .take(end_idx - start_idx)
@@ -284,7 +345,10 @@ impl Renderer {
                 };
 
                 ListItem::new(Line::from(vec![
-                    Span::styled(format!("[{}] ", time_part), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("[{}] ", time_part),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                     Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
                     Span::raw(&msg.content),
                 ]))
@@ -293,20 +357,43 @@ impl Renderer {
 
         // Build title with scroll indicator
         let title = if state.message_scroll > 0 {
-            format!("Messages [{}/{} - PgUp/PgDn to scroll]", 
-                    total_messages.saturating_sub(state.message_scroll),
-                    total_messages)
+            format!(
+                "Messages [{}/{} - PgUp/PgDn to scroll]",
+                total_messages.saturating_sub(state.message_scroll),
+                total_messages
+            )
         } else {
             format!("Messages [{}]", total_messages)
         };
 
-        let widget = List::new(visible_messages)
+        // Empty state: show a short getting-started hint instead of a blank panel
+        if total_messages == 0 {
+            let hint = Paragraph::new(vec![
+                Line::from(""),
+                Line::from("  No messages yet."),
+                Line::from(""),
+                Line::from("  To connect: type the other person's IP:PORT in the field above and press Enter."),
+                Line::from("  To be reached: share one of your addresses from the status panel."),
+                Line::from("  Type /help in the message field for commands."),
+            ])
+            .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().borders(Borders::ALL).title(title));
+            frame.render_widget(hint, area);
+            return;
+        }
+
+        let widget =
+            List::new(visible_messages).block(Block::default().borders(Borders::ALL).title(title));
         frame.render_widget(widget, area);
     }
 
     /// Render the message input field
-    fn render_message_input(&self, frame: &mut Frame, area: ratatui::layout::Rect, state: &UiState) {
+    fn render_message_input(
+        &self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        state: &UiState,
+    ) {
         let (status_text, status_color) = match state.connection_status {
             ConnectionStatus::Online => ("Online", Color::Green),
             ConnectionStatus::Establishing => ("Establishing...", Color::Yellow),
@@ -314,7 +401,9 @@ impl Renderer {
                 match state.identity_status {
                     IdentityStatus::Verified => ("Connected [✓ Verified]", Color::Blue),
                     IdentityStatus::LocalSelf => ("Connected [🏠 LOCAL/SELF]", Color::Cyan),
-                    IdentityStatus::ClonedIdentity => ("Connected [⚠ CLONED IDENTITY!]", Color::Red),
+                    IdentityStatus::ClonedIdentity => {
+                        ("Connected [⚠ CLONED IDENTITY!]", Color::Red)
+                    }
                     IdentityStatus::Unknown => ("Connected [? Unverified]", Color::Yellow),
                     IdentityStatus::Mismatch => ("Connected [⚠ IDENTITY MISMATCH]", Color::Red),
                     IdentityStatus::None => {
@@ -324,10 +413,12 @@ impl Renderer {
                         } else {
                             ("Connected [Encrypted]", Color::Blue)
                         }
-                    },
+                    }
                 }
-            },
-            ConnectionStatus::PeerDisconnected => ("Peer Disconnected - Press Ctrl+D to close", Color::Magenta),
+            }
+            ConnectionStatus::PeerDisconnected => {
+                ("Peer Disconnected - Press Ctrl+D to close", Color::Magenta)
+            }
             ConnectionStatus::Disconnected => ("Disconnected", Color::Red),
         };
 
@@ -339,20 +430,38 @@ impl Renderer {
 
         let widget = Paragraph::new(state.message_input.as_str())
             .style(message_style)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Message [{}] - Type /help for commands", status_text))
-                .title_style(Style::default().fg(status_color)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(
+                        "Message [{}] - Type /help for commands",
+                        status_text
+                    ))
+                    .title_style(Style::default().fg(status_color)),
+            )
             .wrap(Wrap { trim: true });
-        
+
+        frame.render_widget(widget, area);
+    }
+
+    /// Render the one-line shortcut footer (context-sensitive)
+    fn render_footer(&self, frame: &mut Frame, area: ratatui::layout::Rect, state: &UiState) {
+        let text = if state.incoming_connection.is_some() {
+            " a accept · o accept once · d decline"
+        } else if state.show_security_selection {
+            " F1-F4 select level · Esc close"
+        } else {
+            " Tab switch field · Enter send/connect · Ctrl+S security · Ctrl+D disconnect · Ctrl+C quit"
+        };
+        let widget = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(widget, area);
     }
 
     /// Render the security level selection overlay
     fn render_security_selection(&self, frame: &mut Frame, state: &UiState) {
         use ratatui::widgets::Clear;
-        
-        let area = frame.size();
+
+        let area = frame.area();
         let popup_area = ratatui::layout::Rect {
             x: area.width / 4,
             y: area.height / 4,
@@ -371,38 +480,52 @@ impl Renderer {
         let lines = vec![
             Line::from(vec![
                 Span::styled("Current: ", Style::default().fg(Color::White)),
-                Span::styled(state.security_level.display_name(), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    state.security_level.display_name(),
+                    Style::default().fg(Color::Yellow),
+                ),
             ]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("F1/0: ", Style::default().fg(Color::Green)),
                 Span::styled("Quick Mode", Style::default().fg(Color::White)),
-                Span::styled(" - No verification", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    " - Signed + encrypted",
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("F2/1: ", Style::default().fg(Color::Green)),
                 Span::styled("TOFU Mode", Style::default().fg(Color::White)),
-                Span::styled(" - Trust on first use", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    " - Trust on first use",
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("F3/2: ", Style::default().fg(Color::Green)),
                 Span::styled("Secure Mode", Style::default().fg(Color::White)),
-                Span::styled(" - Signatures + rotation", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    " - Fresh Noise channel/message",
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("F4/3: ", Style::default().fg(Color::Green)),
                 Span::styled("Maximum Security", Style::default().fg(Color::White)),
-                Span::styled(" - No persistent history", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    " - No persistent history",
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Press ESC to close", Style::default().fg(Color::DarkGray)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Press ESC to close",
+                Style::default().fg(Color::DarkGray),
+            )]),
         ];
 
-        let widget = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: true });
+        let widget = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
 
         frame.render_widget(widget, popup_area);
     }

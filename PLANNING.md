@@ -1,5 +1,7 @@
 # P2P CLI Security Enhancement Planning
 
+> **Historical document:** This plan describes the retired RSA transport and is retained only for design history. It is not a description of the current security architecture. See README.md for the implemented Noise/Ed25519 protocol and threat model.
+
 ## Table of Contents
 1. [Project Analysis](#project-analysis)
 2. [Security Assessment](#security-assessment)

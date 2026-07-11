@@ -27,10 +27,7 @@ pub enum P2PError {
     IdentityNotFound(String),
 
     #[error("Identity verification failed: peer fingerprint mismatch")]
-    IdentityMismatch {
-        expected: String,
-        received: String,
-    },
+    IdentityMismatch { expected: String, received: String },
 
     #[error("Untrusted peer: {0}")]
     UntrustedPeer(String),
@@ -90,18 +87,6 @@ pub type P2PResult<T> = Result<T, P2PError>;
 impl From<rusqlite::Error> for P2PError {
     fn from(err: rusqlite::Error) -> Self {
         P2PError::DatabaseError(err.to_string())
-    }
-}
-
-impl From<rsa::Error> for P2PError {
-    fn from(err: rsa::Error) -> Self {
-        P2PError::CryptoError(err.to_string())
-    }
-}
-
-impl From<rsa::pkcs1::Error> for P2PError {
-    fn from(err: rsa::pkcs1::Error) -> Self {
-        P2PError::InvalidPublicKey(err.to_string())
     }
 }
 

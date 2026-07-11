@@ -1,18 +1,18 @@
 use clap::Parser;
 
 // Module declarations
+mod app;
 mod crypto;
 mod error;
 mod messagedb;
-mod ui;
 mod network;
-mod app;
+mod ui;
 
 // Imports from our modules
 use app::{App, AppConfig, SecurityLevel};
 use error::{P2PError, P2PResult};
-use ui::UiManager;
 use network::NetworkManager;
+use ui::UiManager;
 
 const DEFAULT_PORT: u16 = 8080;
 
@@ -23,10 +23,10 @@ const DEFAULT_PORT: u16 = 8080;
 #[command(version = "0.2.0")]
 #[command(about = "A modern, secure, terminal-based peer-to-peer messenger", long_about = None)]
 #[command(after_help = "SECURITY LEVELS:
-  0, quick    Quick & dirty - no identity verification
-  1, tofu     Trust on First Use - verify peer identity
-  2, secure   Secure communications - signatures + key rotation  
-  3, max      Maximum security - no persistent history
+  0, quick    Encrypted + signed; approve peers per session
+  1, tofu     Persistently pin peer identities
+  2, secure   Fresh forward-secret Noise channel per message
+  3, max      Secure transport with memory-only history/trust
 
 EXAMPLES:
   p2p-cli                       Start with default settings (port 8080, quick mode)
@@ -68,7 +68,11 @@ async fn main() -> P2PResult<()> {
     if cli.verbose {
         println!("Starting P2P messenger...");
         println!("  Port: {}", cli.port);
-        println!("  Security Level: {} ({})", cli.security as u8, cli.security.display_name());
+        println!(
+            "  Security Level: {} ({})",
+            cli.security as u8,
+            cli.security.display_name()
+        );
     }
 
     run_app(cli.port, cli.security, cli.verbose).await
@@ -81,31 +85,60 @@ async fn run_app(port: u16, security_level: SecurityLevel, verbose: bool) -> P2P
 
     // Create application configuration
     let config = AppConfig::new(port, security_level);
-    
+
     // Initialize components
     let mut app = App::new(config).map_err(|e| P2PError::ConfigError(e.to_string()))?;
     let mut ui_manager = UiManager::new().map_err(|e| P2PError::TerminalError(e.to_string()))?;
-    let mut network_manager = NetworkManager::new(port).await.map_err(|e| P2PError::NetworkError(e.to_string()))?;
-    
+    let mut network_manager = NetworkManager::new(port)
+        .await
+        .map_err(|e| P2PError::NetworkError(e.to_string()))?;
+
     // Start network listener
-    network_manager.start_listener(port).await.map_err(|e| P2PError::NetworkError(e.to_string()))?;
+    network_manager
+        .start_listener(port)
+        .await
+        .map_err(|e| P2PError::NetworkError(e.to_string()))?;
+
+    // Look up our public IP in the background so it can be shared with peers
+    let (public_ip_tx, mut public_ip_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if let Some(ip) = network::addr::fetch_public_ip().await {
+            let _ = public_ip_tx.send(ip.to_string());
+        }
+    });
 
     // Main event loop
     loop {
+        // Pick up the public IP lookup result once it arrives
+        if let Ok(ip) = public_ip_rx.try_recv() {
+            app.set_public_ip(ip);
+        }
         // Handle UI events (with timeout)
-        if let Some(ui_event) = ui_manager.poll_event(100).map_err(|e| P2PError::TerminalError(e.to_string()))? {
-            if let Some(network_msg) = app.handle_ui_event(ui_event).map_err(|e| P2PError::ConfigError(e.to_string()))? {
+        if let Some(ui_event) = ui_manager
+            .poll_event(100)
+            .map_err(|e| P2PError::TerminalError(e.to_string()))?
+        {
+            if let Some(network_msg) = app
+                .handle_ui_event(ui_event)
+                .map_err(|e| P2PError::ConfigError(e.to_string()))?
+            {
                 // Send network message if generated
                 // Use peer_ip if available, otherwise fall back to previous_peer_ip (for disconnect messages)
+                let network_msg = app
+                    .authenticate_outgoing(network_msg)
+                    .map_err(|e| P2PError::CryptoError(e.to_string()))?;
                 let ui_state = app.get_ui_state();
-                let target_ip = ui_state.peer_ip.as_ref().or(ui_state.previous_peer_ip.as_ref());
+                let target_ip = ui_state
+                    .peer_ip
+                    .as_ref()
+                    .or(ui_state.previous_peer_ip.as_ref());
                 if let Some(peer_ip) = target_ip {
                     if let Ok(addr) = peer_ip.parse() {
                         let _ = network_manager.send_message(network_msg, addr).await;
                     }
                 }
             }
-            
+
             if app.should_quit() {
                 break;
             }
@@ -117,8 +150,13 @@ async fn run_app(port: u16, security_level: SecurityLevel, verbose: bool) -> P2P
         }
 
         // Update app (timeouts, pings, etc.)
-        let update_messages = app.update().map_err(|e| P2PError::ConfigError(e.to_string()))?;
+        let update_messages = app
+            .update()
+            .map_err(|e| P2PError::ConfigError(e.to_string()))?;
         for msg in update_messages {
+            let msg = app
+                .authenticate_outgoing(msg)
+                .map_err(|e| P2PError::CryptoError(e.to_string()))?;
             if let Some(peer_ip) = &app.get_ui_state().peer_ip {
                 if let Ok(addr) = peer_ip.parse() {
                     let _ = network_manager.send_message(msg, addr).await;
@@ -127,13 +165,19 @@ async fn run_app(port: u16, security_level: SecurityLevel, verbose: bool) -> P2P
         }
 
         // Render UI
-        ui_manager.render(&app.get_ui_state()).map_err(|e| P2PError::RenderError(e.to_string()))?;
+        ui_manager
+            .render(&app.get_ui_state())
+            .map_err(|e| P2PError::RenderError(e.to_string()))?;
     }
 
     // Cleanup
-    ui_manager.cleanup().map_err(|e| P2PError::TerminalError(e.to_string()))?;
-    network_manager.shutdown().await.map_err(|e| P2PError::NetworkError(e.to_string()))?;
+    ui_manager
+        .cleanup()
+        .map_err(|e| P2PError::TerminalError(e.to_string()))?;
+    network_manager
+        .shutdown()
+        .await
+        .map_err(|e| P2PError::NetworkError(e.to_string()))?;
 
     Ok(())
 }
-

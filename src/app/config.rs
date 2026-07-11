@@ -1,10 +1,10 @@
 /// Security levels available in the application
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityLevel {
-    Quick = 0,     // Current behavior - no identity verification
-    Tofu = 1,      // Trust on first use - verify peer identity
-    Secure = 2,    // Signatures + key rotation
-    Maximum = 3,   // No persistent history
+    Quick = 0,   // Encrypted and signed, explicit approval each session
+    Tofu = 1,    // Persistently pin peer identities
+    Secure = 2,  // Fresh forward-secret channel for every application message
+    Maximum = 3, // Secure plus memory-only history/trust state
 }
 
 impl SecurityLevel {
@@ -15,7 +15,10 @@ impl SecurityLevel {
             "1" | "tofu" => Ok(SecurityLevel::Tofu),
             "2" | "secure" => Ok(SecurityLevel::Secure),
             "3" | "max" | "maximum" => Ok(SecurityLevel::Maximum),
-            _ => Err(format!("Invalid security level: {}. Use 0-3 or quick/tofu/secure/max", s)),
+            _ => Err(format!(
+                "Invalid security level: {}. Use 0-3 or quick/tofu/secure/max",
+                s
+            )),
         }
     }
 
@@ -23,7 +26,7 @@ impl SecurityLevel {
     pub fn display_name(&self) -> &'static str {
         match self {
             SecurityLevel::Quick => "QUICK MODE",
-            SecurityLevel::Tofu => "TOFU MODE", 
+            SecurityLevel::Tofu => "TOFU MODE",
             SecurityLevel::Secure => "SECURE MODE",
             SecurityLevel::Maximum => "MAX SECURITY",
         }
@@ -32,35 +35,31 @@ impl SecurityLevel {
     /// Get description of security level
     pub fn description(&self) -> &'static str {
         match self {
-            SecurityLevel::Quick => "Quick & dirty - no identity verification (current behavior)",
-            SecurityLevel::Tofu => "Trust on first use - verify peer identity",
-            SecurityLevel::Secure => "Secure communications - signatures + key rotation",
-            SecurityLevel::Maximum => "Maximum security - no persistent history",
+            SecurityLevel::Quick => "Encrypted + signed transport; approve peers each session",
+            SecurityLevel::Tofu => "Encrypted + signed transport with persistent identity pinning",
+            SecurityLevel::Secure => "TOFU plus a fresh forward-secret Noise channel per message",
+            SecurityLevel::Maximum => "Secure transport with memory-only history and trust state",
         }
     }
 
     /// Check if this security level requires identity verification
     pub fn requires_identity(&self) -> bool {
         match self {
-            SecurityLevel::Quick => false,
-            SecurityLevel::Tofu | SecurityLevel::Secure | SecurityLevel::Maximum => true,
+            SecurityLevel::Quick
+            | SecurityLevel::Tofu
+            | SecurityLevel::Secure
+            | SecurityLevel::Maximum => true,
         }
     }
 
     /// Check if this security level requires digital signatures
     pub fn requires_signatures(&self) -> bool {
-        match self {
-            SecurityLevel::Quick | SecurityLevel::Tofu => false,
-            SecurityLevel::Secure | SecurityLevel::Maximum => true,
-        }
+        true
     }
 
     /// Check if this security level requires key rotation
     pub fn requires_key_rotation(&self) -> bool {
-        match self {
-            SecurityLevel::Quick | SecurityLevel::Tofu => false,
-            SecurityLevel::Secure | SecurityLevel::Maximum => true,
-        }
+        true
     }
 
     /// Check if this security level disables persistent history
@@ -71,9 +70,10 @@ impl SecurityLevel {
         }
     }
 
-    /// Negotiate security level with peer (use the higher level)
+    /// Report the effective shared policy conservatively: a session is only as
+    /// strong as the weaker endpoint's declared policy.
     pub fn negotiate_with(self, peer_level: SecurityLevel) -> SecurityLevel {
-        match (self as u8).max(peer_level as u8) {
+        match (self as u8).min(peer_level as u8) {
             0 => SecurityLevel::Quick,
             1 => SecurityLevel::Tofu,
             2 => SecurityLevel::Secure,

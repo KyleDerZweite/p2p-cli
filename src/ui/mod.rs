@@ -1,22 +1,15 @@
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
-use std::io::Stdout;
 use std::time::Instant;
 
-pub mod terminal;
-pub mod renderer;
 pub mod input;
+pub mod renderer;
+pub mod terminal;
 
-pub use terminal::TerminalManager;
-pub use renderer::Renderer;
 pub use input::InputHandler;
+pub use renderer::Renderer;
+pub use terminal::TerminalManager;
 
 // Re-export commonly used types
-pub use crossterm::event::{Event, KeyEvent};
-pub use ratatui::Frame;
 
 /// Events that the UI can generate
 #[derive(Debug, Clone)]
@@ -93,6 +86,10 @@ pub struct UiState {
     pub identity_status: IdentityStatus,
     /// Whether the connection is via localhost
     pub is_localhost: bool,
+    /// Our LAN IP address, if detectable
+    pub local_ip: Option<String>,
+    /// Our public IP address, if the lookup succeeded
+    pub public_ip: Option<String>,
     /// Current scroll position in messages (0 = bottom/latest)
     pub message_scroll: usize,
 }
@@ -182,7 +179,10 @@ impl UiManager {
     }
 
     /// Poll for UI events with timeout (non-blocking)
-    pub fn poll_event(&mut self, timeout_ms: u64) -> Result<Option<UiEvent>, Box<dyn std::error::Error>> {
+    pub fn poll_event(
+        &mut self,
+        timeout_ms: u64,
+    ) -> Result<Option<UiEvent>, Box<dyn std::error::Error>> {
         self.input_handler.poll_event(timeout_ms)
     }
 

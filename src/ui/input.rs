@@ -25,7 +25,10 @@ impl InputHandler {
     }
 
     /// Poll for input events with timeout (non-blocking)
-    pub fn poll_event(&mut self, timeout_ms: u64) -> Result<Option<UiEvent>, Box<dyn std::error::Error>> {
+    pub fn poll_event(
+        &mut self,
+        timeout_ms: u64,
+    ) -> Result<Option<UiEvent>, Box<dyn std::error::Error>> {
         if event::poll(Duration::from_millis(timeout_ms))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
@@ -41,12 +44,10 @@ impl InputHandler {
     /// Convert crossterm key events to UI events
     fn convert_key_event(&self, key_code: KeyCode, modifiers: KeyModifiers) -> Option<UiEvent> {
         use crate::app::SecurityLevel;
-        
+
         match key_code {
             // Ctrl+C: Quit
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(UiEvent::Quit)
-            }
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::Quit),
             // Ctrl+D: Disconnect
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(UiEvent::Disconnect)
@@ -72,7 +73,9 @@ impl InputHandler {
             KeyCode::PageUp => Some(UiEvent::ScrollUp),
             KeyCode::PageDown => Some(UiEvent::ScrollDown),
             KeyCode::Home if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollTop),
-            KeyCode::End if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollBottom),
+            KeyCode::End if modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(UiEvent::ScrollBottom)
+            }
             KeyCode::Up if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollUp),
             KeyCode::Down if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollDown),
             // Escape and other keys
