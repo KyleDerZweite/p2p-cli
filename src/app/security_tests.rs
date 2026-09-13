@@ -256,3 +256,45 @@ fn quick_invitation_authenticates_without_implicit_persistent_trust() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn long_diagnostics_wrap_and_scroll_to_both_ends() {
+    use ratatui::{backend::TestBackend, Terminal};
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Arc::new(IdentityManager::new(dir.path().join("identity")).unwrap());
+    let mut app = app(identity);
+    app.add_system_message(format!(
+        "BEGIN {} END",
+        "connection diagnostics ".repeat(60)
+    ));
+    let renderer = crate::ui::Renderer::new();
+    let mut terminal = Terminal::new(TestBackend::new(50, 24)).unwrap();
+    let mut draw = |app: &mut App| {
+        let limit = std::cell::Cell::new(0);
+        terminal
+            .draw(|frame| limit.set(renderer.render(frame, &app.get_ui_state())))
+            .unwrap();
+        app.set_message_scroll_limit(limit.get());
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let bottom = draw(&mut app);
+    assert!(app.state.max_message_scroll > app.state.messages.len());
+    assert!(
+        bottom.contains("END"),
+        "last diagnostic words must remain visible"
+    );
+    app.handle_ui_event(UiEvent::ScrollTop).unwrap();
+    let top = draw(&mut app);
+    assert!(
+        top.contains("BEGIN"),
+        "first diagnostic words must be reachable"
+    );
+    app.handle_ui_event(UiEvent::ScrollBottom).unwrap();
+    assert!(draw(&mut app).contains("END"));
+}

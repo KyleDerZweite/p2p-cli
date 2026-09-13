@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 use std::time::Instant;
@@ -18,7 +18,7 @@ impl Renderer {
     }
 
     /// Main render function - renders the entire UI
-    pub fn render(&self, frame: &mut Frame, state: &UiState) {
+    pub fn render(&self, frame: &mut Frame, state: &UiState) -> usize {
         // Adjust connection info height based on whether there's an incoming connection
         // Base height: 7 lines (5 content lines + 2 for borders)
         // With incoming connection: 9 lines (extra for incoming prompt)
@@ -37,7 +37,7 @@ impl Renderer {
 
         self.render_connect_field(frame, chunks[0], state);
         self.render_connection_info(frame, chunks[1], state);
-        self.render_messages(frame, chunks[2], state);
+        let max_scroll = self.render_messages(frame, chunks[2], state);
         self.render_message_input(frame, chunks[3], state);
         self.render_footer(frame, chunks[4], state);
 
@@ -45,6 +45,7 @@ impl Renderer {
         if state.show_security_selection {
             self.render_security_selection(frame, state);
         }
+        max_scroll
     }
 
     /// Render the connection input field with security level indicator
@@ -297,7 +298,13 @@ impl Renderer {
                     .into(),
             );
             if let Some(local) = &state.local_ip {
-                text_lines.push(format!("LAN: {}:{} (same network)", local, state.port));
+                text_lines.push(format!(
+                    "Local candidate: {}",
+                    local
+                        .parse::<std::net::IpAddr>()
+                        .map(|ip| std::net::SocketAddr::new(ip, state.port).to_string())
+                        .unwrap_or_else(|_| local.clone())
+                ));
             }
             text_lines.push(format!("Localhost: 127.0.0.1:{}", state.port));
             if let Some(our_fp) = &state.our_fingerprint {
@@ -315,76 +322,65 @@ impl Renderer {
         frame.render_widget(widget, area);
     }
 
-    /// Render the chat messages with scrolling support
-    fn render_messages(&self, frame: &mut Frame, area: ratatui::layout::Rect, state: &UiState) {
-        let total_messages = state.messages.len();
-        let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
-
-        // Calculate which messages to show based on scroll position
-        // scroll = 0 means show latest, scroll > 0 means show older
-        let end_idx = total_messages.saturating_sub(state.message_scroll);
-        let start_idx = end_idx.saturating_sub(visible_height);
-
-        let visible_messages: Vec<ListItem> = state
+    /// Return the wrapped row limit so scrolling can reach every part of a message.
+    fn render_messages(
+        &self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        state: &UiState,
+    ) -> usize {
+        let lines: Vec<Line> = state
             .messages
             .iter()
-            .skip(start_idx)
-            .take(end_idx - start_idx)
-            .map(|msg| {
-                let (prefix, style) = match msg.source {
-                    MessageSource::Me => ("You: ", Style::default().fg(Color::Cyan)),
-                    MessageSource::Peer => ("Peer: ", Style::default().fg(Color::White)),
-                    MessageSource::System => ("System: ", Style::default().fg(Color::Yellow)),
+            .flat_map(|msg| {
+                let (prefix, color) = match msg.source {
+                    MessageSource::Me => ("You: ", Color::Cyan),
+                    MessageSource::Peer => ("Peer: ", Color::White),
+                    MessageSource::System => ("System: ", Color::Yellow),
                 };
-
-                // Extract just the time part (HH:MM:SS) from the timestamp
-                let time_part = if msg.timestamp.len() >= 19 {
-                    &msg.timestamp[11..19] // Extract "HH:MM:SS" from "YYYY-MM-DD HH:MM:SS"
-                } else {
-                    &msg.timestamp
-                };
-
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("[{}] ", time_part),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
-                    Span::raw(&msg.content),
-                ]))
+                let time = msg.timestamp.get(11..19).unwrap_or(&msg.timestamp);
+                msg.content
+                    .split('\n')
+                    .enumerate()
+                    .map(move |(index, content)| {
+                        if index == 0 {
+                            Line::from(vec![
+                                Span::styled(
+                                    format!("[{time}] "),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                                Span::styled(
+                                    prefix,
+                                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                                ),
+                                Span::raw(content),
+                            ])
+                        } else {
+                            Line::from(content)
+                        }
+                    })
             })
             .collect();
-
-        // Build title with scroll indicator
-        let title = if state.message_scroll > 0 {
-            format!(
-                "Messages [{}/{} - PgUp/PgDn to scroll]",
-                total_messages.saturating_sub(state.message_scroll),
-                total_messages
-            )
+        let text = if lines.is_empty() {
+            vec![Line::from("Paste an invitation into the connection field and press Enter. Ctrl+Y copies your invitation; /help lists commands.")]
         } else {
-            format!("Messages [{}]", total_messages)
+            lines
         };
-
-        // Empty state: show a short getting-started hint instead of a blank panel
-        if total_messages == 0 {
-            let hint = Paragraph::new(vec![
-                Line::from(""),
-                Line::from("  No messages yet."),
-                Line::from(""),
-                Line::from("  To connect: type the other person's IP:PORT in the field above and press Enter."),
-                Line::from("  To be reached: share one of your addresses from the status panel."),
-                Line::from("  Type /help in the message field for commands."),
-            ])
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL).title(title));
-            frame.render_widget(hint, area);
-            return;
-        }
-
-        let widget =
-            List::new(visible_messages).block(Block::default().borders(Borders::ALL).title(title));
-        frame.render_widget(widget, area);
+        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+        let height = area.height.saturating_sub(2) as usize;
+        let max_scroll = paragraph
+            .line_count(area.width.saturating_sub(2))
+            .saturating_sub(height)
+            .min(u16::MAX as usize);
+        let offset = max_scroll.saturating_sub(state.message_scroll.min(max_scroll));
+        let title = format!("Messages [{}] · PgUp/PgDn scroll", state.messages.len());
+        frame.render_widget(
+            paragraph
+                .scroll((offset as u16, 0))
+                .block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
+        max_scroll
     }
 
     /// Render the message input field

@@ -22,6 +22,8 @@ To build from source, install Rust and a C compiler, then run this in the reposi
 cargo install --path . --locked
 ```
 
+If you only run `cargo build --release`, the command is `./target/release/p2p-cli`. Building alone does not install `p2p-cli` on your PATH.
+
 The listener generates an invitation, shares it with the other person, then starts chat using the same profile and port:
 
 ```sh

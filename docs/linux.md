@@ -28,6 +28,8 @@ Run `p2p-cli --diagnose` to inspect local address candidates and discovery limit
 | Identity mismatch | The endpoint does not have the key in the invitation or stored trust. Verify the invitation and identity with the person before accepting a replacement. |
 | Handshake failure | TCP worked, but the remote endpoint may be a different program, incompatible version, scanner, or an attacker. Compare versions and destination ports. |
 
+When SSH works but the chat port times out, test a different listening port on the same server. For example, start the listener with `-p 44443`, generate a new invitation with `--invite -p 44443`, and use that new invitation on the connecting client. A reachable alternate port can avoid a port-specific filter without changing the protocol. Keep the listener running during the test. A server-side packet capture can distinguish packets that reached the host from packets dropped earlier, but it cannot name an upstream rule.
+
 For local inspection, use `ip address`, `ip route`, `ip -6 route`, and `ss -ltnp`. Firewall inspection depends on the distribution, commonly `sudo nft list ruleset` or `sudo ufw status verbose`. These inspect your own machine. Router policy requires inspecting your router's own interface or logs.
 
 A timeout does not prove that a specific router rejected traffic. The application cannot truthfully name that router or rule without its response or logs. Behind carrier-grade NAT, the router's WAN address may itself be private or in `100.64.0.0/10`. Home-router forwarding alone does not make that WAN reachable. Try reachable IPv6, let the other person listen, or ask the ISP about public addressing. Some network pairs cannot connect within the project's direct-only requirement.

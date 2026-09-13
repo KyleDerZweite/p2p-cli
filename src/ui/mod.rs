@@ -180,11 +180,12 @@ impl UiManager {
     }
 
     /// Render the current UI state
-    pub fn render(&mut self, state: &UiState) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn render(&mut self, state: &UiState) -> Result<usize, Box<dyn std::error::Error>> {
+        let mut max_scroll = 0;
         self.terminal_manager.draw(|frame| {
-            self.renderer.render(frame, state);
+            max_scroll = self.renderer.render(frame, state);
         })?;
-        Ok(())
+        Ok(max_scroll)
     }
 
     /// Clean up terminal on exit

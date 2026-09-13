@@ -239,6 +239,11 @@ impl App {
         Ok(())
     }
 
+    pub fn set_message_scroll_limit(&mut self, limit: usize) {
+        self.state.max_message_scroll = limit;
+        self.state.message_scroll = self.state.message_scroll.min(limit);
+    }
+
     /// Get current UI state for rendering
     pub fn get_ui_state(&self) -> UiState {
         UiState {

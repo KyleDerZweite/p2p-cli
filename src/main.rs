@@ -293,9 +293,10 @@ async fn run_app(cli: Cli, log: &mut Option<diagnostics::DiagnosticLog>) -> P2PR
         }
 
         // Render UI
-        ui_manager
+        let max_scroll = ui_manager
             .render(&app.get_ui_state())
             .map_err(|e| P2PError::RenderError(e.to_string()))?;
+        app.set_message_scroll_limit(max_scroll);
     }
 
     // Cleanup

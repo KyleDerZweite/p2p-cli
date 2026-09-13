@@ -90,6 +90,7 @@ pub fn connection_diagnostic(target: SocketAddr, error: &std::io::Error) -> Stri
     let guidance = match error.kind() {
         ErrorKind::ConnectionRefused => "The destination rejected TCP. Check that p2p-cli is listening on this port and that any port forwarding targets the listener's current LAN address. A firewall can also reject TCP.",
         ErrorKind::TimedOut => "No TCP response arrived before the deadline. The peer may be offline, the address may be stale, or a firewall/NAT may silently drop traffic. This result cannot identify which router blocked it. Try reversing who connects; allow the listener's TCP port in its host firewall and router. CGNAT may require reachable IPv6 or ISP changes.",
+        ErrorKind::NetworkUnreachable => "The local system has no route to this destination. For IPv6, inspect 'ip -6 route'; if no usable default route exists, use an IPv4 candidate or configure IPv6 connectivity.",
         ErrorKind::PermissionDenied => "The local operating system denied the connection. Check local firewall policy and sandbox restrictions.",
         ErrorKind::AddrNotAvailable => "The local system cannot use this address family or source address. Check IPv6 configuration or use the peer's IPv4 candidate.",
         _ => "Check the local route, peer address, listener, and host/router firewall. For a remote private address, use a reachable public address or a network run by the two peers.",
@@ -118,6 +119,11 @@ mod tests {
     #[test]
     fn timeout_reports_uncertainty_and_refused_reports_evidence() {
         let target = "192.0.2.1:8080".parse().unwrap();
+        assert!(connection_diagnostic(
+            target,
+            &std::io::Error::from(std::io::ErrorKind::NetworkUnreachable)
+        )
+        .contains("ip -6 route"));
         assert!(
             connection_diagnostic(target, &std::io::Error::from(std::io::ErrorKind::TimedOut))
                 .contains("cannot identify which router")

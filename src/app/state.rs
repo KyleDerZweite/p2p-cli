@@ -58,6 +58,7 @@ pub struct AppState {
     // Scrolling
     /// Current scroll offset in messages (0 = showing latest)
     pub message_scroll: usize,
+    pub max_message_scroll: usize,
 }
 
 impl AppState {
@@ -94,12 +95,13 @@ impl AppState {
             local_ip: None,
             // Scrolling
             message_scroll: 0,
+            max_message_scroll: 0,
         }
     }
 
     /// Scroll messages up (towards older messages)
     pub fn scroll_up(&mut self, lines: usize) {
-        let max_scroll = self.messages.len().saturating_sub(1);
+        let max_scroll = self.max_message_scroll;
         self.message_scroll = (self.message_scroll + lines).min(max_scroll);
     }
 
@@ -110,7 +112,7 @@ impl AppState {
 
     /// Scroll to top (oldest messages)
     pub fn scroll_top(&mut self) {
-        self.message_scroll = self.messages.len().saturating_sub(1);
+        self.message_scroll = self.max_message_scroll;
     }
 
     /// Scroll to bottom (newest messages)
