@@ -4,6 +4,8 @@
 Run after cargo build: python3 tests/linux_smoke.py [path/to/p2p-cli]
 Uses only Python's standard library, loopback sockets, and temporary XDG profiles.
 """
+import base64
+import json
 import fcntl
 import os
 from pathlib import Path
@@ -104,15 +106,22 @@ def run():
             ports[1] = port()
         invitation = subprocess.check_output([BINARY, "--invite", "-p", str(ports[0]), "--address", f"127.0.0.1:{ports[0]}"], env=envs[0], text=True).strip()
         assert invitation.startswith("p2p-cli:v1:"), invitation
+        failed_port = port()
+        payload = json.loads(base64.urlsafe_b64decode(invitation.split(":", 2)[2] + "=="))
+        payload["candidates"].insert(0, f"127.0.0.1:{failed_port}")
+        fallback_invitation = "p2p-cli:v1:" + base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        logs = []
         for cycle in range(2):
             terminals = []
             try:
-                alice = Terminal(envs[0], ["-p", str(ports[0])])
+                log = root / f"alice-{cycle}.log"
+                logs.append(log)
+                alice = Terminal(envs[0], ["-p", str(ports[0]), "--log", str(log)])
                 terminals.append(alice)
                 until(terminals, lambda: b"Listening" in alice.output or b"Online" in alice.output, "listener ready")
                 args = ["-p", str(ports[1])]
                 if cycle == 0:
-                    args += ["--connect", invitation]
+                    args += ["--connect", fallback_invitation]
                 bob = Terminal(envs[1], args)
                 terminals.append(bob)
                 if cycle:
@@ -121,6 +130,8 @@ def run():
                 until(terminals, lambda: b"Accept" in alice.output, "incoming approval")
                 alice.send("a")
                 until(terminals, lambda: b"Connected" in bob.output, "client connected")
+                if cycle == 0:
+                    assert b"failed" in bob.output.lower(), "failed candidate did not report its failure"
                 if cycle:
                     until(terminals, lambda: b"smoke-alice-0" in alice.output and b"smoke-bob-0" in bob.output, "history restored after restart")
                 alice.send(f"\x1b[200~smoke-alice-{cycle}\x1b[201~\r")
@@ -135,7 +146,67 @@ def run():
             assert len(rows) == 4, (path, len(rows))
             assert sum(row[1] for row in rows) == 2, rows
             assert all("smoke-" not in row[0] for row in rows), "chat stored in plaintext"
-        print("PASS: independent profiles, invitation approval, bidirectional chat, restart/reconnect, encrypted history")
+        for log in logs:
+            data = log.read_bytes()
+            assert data, "diagnostic log is empty"
+            assert log.stat().st_mode & 0o777 == 0o600
+            assert b"smoke-" not in data, "diagnostic log contains chat text"
+            for profile_root in roots:
+                identity = next((profile_root / "config").rglob("p2p_identity")).read_bytes()
+                assert identity not in data and identity.hex().encode() not in data
+                assert base64.b64encode(identity) not in data
+                key_file = next((profile_root / "config").rglob(".env")).read_text()
+                key = key_file.strip().split("=", 1)[1].encode()
+                assert key not in data, "diagnostic log contains storage key"
+        test_wrong_identity(root, envs, ports, invitation)
+        test_maximum(root)
+        print("PASS: PTY chat, invitation fallback/pinning/paste, restart/history, private metadata logs, Maximum memory-only history")
+
+
+def test_wrong_identity(root, envs, ports, invitation):
+    wrong = subprocess.check_output([BINARY, "--invite", "--address", f"127.0.0.1:{ports[0]}"], env=envs[1], text=True).strip()
+    assert wrong != invitation
+    terminals = []
+    try:
+        alice = Terminal(envs[0], ["-p", str(ports[0])])
+        terminals.append(alice)
+        until(terminals, lambda: b"Listening" in alice.output, "wrong-key listener ready")
+        bob = Terminal(envs[1], ["-p", str(ports[1]), "--connect", wrong])
+        terminals.append(bob)
+        until(terminals, lambda: b"identity" in bob.output.lower() and b"failed" in bob.output.lower(), "wrong invitation identity rejected")
+        assert b"Accept" not in alice.output, "wrong pin reached conversation approval"
+        assert b"Connected" not in bob.output, "wrong pin opened chat"
+    finally:
+        for terminal in terminals:
+            terminal.close()
+
+
+def test_maximum(root):
+    roots = [root / "max-alice", root / "max-bob"]
+    envs = [profile(path) for path in roots]
+    ports = [port(), port()]
+    invitation = subprocess.check_output([BINARY, "--invite", "--address", f"127.0.0.1:{ports[0]}"], env=envs[0], text=True).strip()
+    terminals = []
+    try:
+        alice = Terminal(envs[0], ["-s", "max", "-p", str(ports[0])])
+        terminals.append(alice)
+        until(terminals, lambda: b"Listening" in alice.output, "Maximum listener ready")
+        bob = Terminal(envs[1], ["-s", "max", "-p", str(ports[1]), "--connect", invitation])
+        terminals.append(bob)
+        until(terminals, lambda: b"Accept" in alice.output, "Maximum approval")
+        alice.send("a")
+        until(terminals, lambda: b"Connected" in bob.output, "Maximum chat connected")
+        alice.send("maximum-secret-alice\r")
+        until(terminals, lambda: b"maximum-secret-alice" in bob.output, "Maximum encrypted chat")
+        bob.send("maximum-secret-bob\r")
+        until(terminals, lambda: b"maximum-secret-bob" in alice.output, "Maximum reverse chat")
+    finally:
+        for terminal in terminals:
+            terminal.close()
+    for path in roots:
+        files = [file for file in path.rglob("*") if file.is_file()]
+        assert all(file.name == "p2p_identity" for file in files), files
+        assert not list(path.rglob(".env")) and not list(path.rglob("messages.db"))
 
 
 if __name__ == "__main__":
