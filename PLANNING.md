@@ -1,6 +1,6 @@
 # P2P CLI Security Enhancement Planning
 
-> **Historical document:** This plan describes the retired RSA transport and is retained only for design history. It is not a description of the current security architecture. See README.md for the implemented Noise/Ed25519 protocol and threat model.
+> **Document note:** Sections 1 through 6 describe the retired RSA transport and are retained for design history. Section 7 outlines the direct-only, zero-infrastructure architecture for network connectivity and transport security.
 
 ## Table of Contents
 1. [Project Analysis](#project-analysis)
@@ -9,6 +9,7 @@
 4. [Technical Deep Dive](#technical-deep-dive)
 5. [Implementation Strategy](#implementation-strategy)
 6. [Design Decisions](#design-decisions)
+7. [Direct Transport and Zero-Infrastructure Connectivity Plan](#direct-transport-and-zero-infrastructure-connectivity-plan)
 
 ---
 
@@ -646,3 +647,70 @@ This tiered security approach provides a practical path to enhance the P2P CLI's
 The implementation strategy allows for incremental development, with each phase building on the previous one. This approach reduces risk and allows for learning and adjustment throughout the development process.
 
 The current system's forward secrecy foundation provides a strong starting point, and the planned enhancements will address the primary vulnerability of identity verification while adding additional security layers for users who need them.
+
+---
+
+## Direct transport and zero-infrastructure connectivity plan
+
+### Core design principle
+
+The application architecture commits strictly to a direct-only model: two clients, with no accounts, servers, or relays.
+
+Public relays compromise security and leak conversation metadata. Self-hosted relays introduce operational complexity and defeat the goal of running only two client programs. Therefore, intermediate relay servers are explicitly excluded.
+
+### The unavoidable network boundary
+
+Direct peer-to-peer communication operates under physical network constraints:
+
+1. On the same LAN, connections succeed directly unless local firewalls or Wi-Fi client isolation block traffic.
+2. Across networks with a reachable global IPv6 address on one side, connections succeed directly when firewalls permit incoming packets.
+3. Across networks with an IPv4 port mapped to one client, connections succeed directly. This mapping can be automatic when the router supports PCP or UPnP, or manually configured.
+4. When neither side has a reachable address and both networks forbid inbound traffic, no direct connection is possible without altering network conditions or using a mesh VPN like WireGuard.
+
+The application accepts this boundary honestly. When networks prevent direct communication, the app produces a clear diagnostic rather than silently falling back to intermediate relay servers.
+
+### Immediate correctness and security blockers
+
+Before expanding listener exposure or changing transport lifecycles, these four codebase issues must be resolved:
+
+1. **Transport channel binding.** In `src/network/connection.rs`, each session generates fresh Noise keypairs, and the handshake completes with empty payloads. Message envelopes carry Ed25519 signatures, but those signatures do not bind to the Noise handshake transcript hash. Without channel binding, an active adversary could establish separate encrypted transport sessions to each peer and forward signed envelopes. The application signature must authenticate the specific session handshake hash before any chat text is transmitted.
+2. **Envelope immutability vs transport metadata.** In `src/app/mod.rs`, incoming messages have `from_ip` overwritten with the observed socket address before `validate_incoming` verifies the signature. Because `NetworkMessage::signing_bytes` includes `from_ip`, this invalidates signatures whenever the observed source address differs from the sender address. Transport-level address tracking must be stored outside the immutable signed envelope.
+3. **Removing external web dependencies.** The public IP lookup in `src/network/addr.rs` queries `api.ipify.org` over plain HTTP on port 80. External IP lookups create an unwanted third-party dependency. This call will be removed entirely, deriving candidate addresses from local network interfaces, global IPv6 addresses, and router responses.
+4. **Scanner isolation and connection limits.** The TCP listener reports all failed handshakes directly to the interface. On the public internet, port scanners flood the terminal with false alerts. Inbound failures from unprompted connections must be filtered, rate-limited, and isolated from user chat notifications.
+
+### Planned transport architecture
+
+#### 1. Persistent bidirectional TCP connections
+
+Replace the current ephemeral model of opening a new TCP connection per message with a single persistent, bidirectional TCP connection per conversation.
+
+Once either side connects, both participants send and receive through that single duplex stream. Either client can take the listening role, meaning only the listening side needs to be reachable. This halves the reachability requirement compared to the current two-way listener model.
+
+#### 2. Self-contained invitations and local discovery
+
+- **Local link discovery.** On the same LAN, link-local mDNS provides zero-configuration discovery without external DNS servers. Discovery identifies connection addresses, while cryptographic identity verification remains an independent gate.
+- **Copyable connection invitations.** Across networks, the listening client generates a compact invitation string containing its expected Ed25519 public key and candidate connection addresses. Users exchange this invitation over an existing trusted channel.
+- **Pre-connection verification.** The connecting client verifies the listener public key against the invitation before establishing the conversation.
+
+#### 3. IPv6 and optional router port mapping
+
+- **Direct IPv6.** The client attempts direct connections over available global IPv6 addresses first, avoiding IPv4 NAT entirely when both networks support it.
+- **Optional PCP and UPnP mapping.** For IPv4, the client can request a temporary port mapping from the local router using PCP or UPnP.
+- **Explicit user consent.** Router port requests require explicit user permission in the terminal interface. Mappings use finite leases, renew periodically while active, and perform best-effort cleanup on shutdown.
+- **No DMZ or firewall disabling.** The app will never request broad DMZ settings or disable local firewalls.
+
+### What is explicitly excluded
+
+To honor the zero-infrastructure requirement, the following are permanently excluded from the core messenger:
+
+- No public or self-hosted relays.
+- No central rendezvous or signaling servers.
+- No public STUN or TURN dependencies.
+- No third-party IP lookup APIs.
+
+### Implementation phases
+
+1. **Phase 1: Security and correctness fixes.** Implement Noise handshake hash channel binding, decouple transport metadata from signed envelopes, remove the HTTP IP lookup, and suppress scanner noise.
+2. **Phase 2: Persistent TCP engine.** Refactor the connection manager to maintain a single bidirectional TCP stream per session with length-delimited framing and bounded queues.
+3. **Phase 3: Invitations and IPv6 support.** Implement self-contained invitation generation and parsing, add dual-stack IPv6 socket binding, and add link-local mDNS for LAN discovery.
+4. **Phase 4: Router port mapping.** Integrate optional PCP and UPnP mapping with explicit terminal permission prompts and lease renewal.
