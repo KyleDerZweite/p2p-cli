@@ -59,7 +59,7 @@ impl ConnectionManager {
         if let Some(task) = self.listener_handle.take() {
             task.abort();
         }
-        let tasks: Vec<_> = self
+        let mut tasks: Vec<_> = self
             .sessions
             .drain()
             .map(|(_, s)| {
@@ -67,10 +67,16 @@ impl ConnectionManager {
                 s.task
             })
             .collect();
-        for mut task in tasks {
-            if timeout(Duration::from_secs(2), &mut task).await.is_err() {
-                task.abort();
+        let drained = timeout(Duration::from_secs(2), async {
+            for task in &mut tasks {
                 let _ = task.await;
+            }
+        })
+        .await
+        .is_ok();
+        if !drained {
+            for task in &tasks {
+                task.abort();
             }
         }
     }
@@ -363,29 +369,64 @@ async fn conversation(
     let mut transport = transport;
     let mut buffer = vec![0u8; MAX_NOISE_FRAME];
     let _ = events.send(NetworkEvent::ConnectionEstablished(addr)).await;
+    let mut lifecycle = Lifecycle::new(initiator);
+    let approval_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     if let Some(message) = first {
+        lifecycle.check(&message.msg_type, false)?;
         send_encrypted(&mut writer, &mut transport, &message, &mut buffer).await?;
     }
     loop {
         tokio::select! {
+            _=tokio::time::sleep_until(approval_deadline), if !lifecycle.approved=>return Err("[session approval] conversation was not accepted within 90s; reconnect to retry".into()),
             incoming=received.recv()=>{
                 let ciphertext=incoming.ok_or("[session read] frame reader stopped")??;
                 let n=transport.read_message(&ciphertext,&mut buffer)?;
                 if n>MAX_PLAINTEXT {return Err("[session read] plaintext exceeds protocol limit".into());}
                 let message:NetworkMessage=serde_json::from_slice(&buffer[..n])?;
                 if message.identity_key.as_deref()!=Some(peer_key.as_str()){return Err("[session identity] message identity differs from authenticated channel".into());}
+                lifecycle.check(&message.msg_type, true)?;
                 let closes=matches!(message.msg_type,MessageType::Disconnect|MessageType::ConnectionDecline);
                 events.send(NetworkEvent::MessageReceived(message,addr)).await?;
                 if closes {return Ok(());}
             }
             outgoing=outgoing.recv()=>{
                 let message=match outgoing{Some(m)=>m,None=>return Ok(())};
+                lifecycle.check(&message.msg_type, false)?;
                 send_encrypted(&mut writer,&mut transport,&message,&mut buffer).await?;
                 if matches!(message.msg_type,MessageType::Disconnect|MessageType::ConnectionDecline){writer.shutdown().await?;return Ok(());}
             }
         }
     }
 }
+/// Transport lifecycle follows the conversation decisions made by App. An
+/// inbound session becomes approved only when App queues ConnectionAccept.
+struct Lifecycle {
+    initiator: bool,
+    requested: bool,
+    approved: bool,
+}
+impl Lifecycle {
+    fn new(initiator: bool) -> Self {
+        Self {
+            initiator,
+            requested: false,
+            approved: false,
+        }
+    }
+    fn check(&mut self, kind: &MessageType, incoming: bool) -> Result<(), Error> {
+        use MessageType::*;
+        let from_initiator = incoming != self.initiator;
+        match kind {
+            ConnectionRequest if from_initiator && !self.requested && !self.approved=>{self.requested=true;Ok(())},
+            ConnectionAccept if !from_initiator && self.requested && !self.approved=>{self.approved=true;Ok(())},
+            ConnectionDecline if !from_initiator && self.requested && !self.approved=>Ok(()),
+            Disconnect if self.requested=>Ok(()),
+            TextMessage|Ping|PingResponse if self.approved=>Ok(()),
+            _=>Err(format!("[session protocol] unexpected {kind:?}; application data requires an accepted conversation").into()),
+        }
+    }
+}
+
 async fn send_encrypted<W: AsyncWrite + Unpin>(
     writer: &mut W,
     transport: &mut snow::TransportState,
@@ -432,6 +473,19 @@ async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, data: &[u8]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn approval_gate_rejects_preapproval_data_and_repeated_requests() {
+        let mut server = Lifecycle::new(false);
+        assert!(server.check(&MessageType::Ping, true).is_err());
+        server.check(&MessageType::ConnectionRequest, true).unwrap();
+        assert!(server.check(&MessageType::ConnectionRequest, true).is_err());
+        assert!(server.check(&MessageType::TextMessage, true).is_err());
+        assert!(server.check(&MessageType::ConnectionAccept, true).is_err());
+        server.check(&MessageType::ConnectionAccept, false).unwrap();
+        server.check(&MessageType::TextMessage, true).unwrap();
+        server.check(&MessageType::Ping, false).unwrap();
+        assert!(server.check(&MessageType::ConnectionAccept, false).is_err());
+    }
     #[tokio::test]
     async fn frame_roundtrip_and_limit() {
         let (mut a, mut b) = tokio::io::duplex(65536);
@@ -601,6 +655,43 @@ mod conversation_tests {
                 NetworkEvent::ConnectionEstablished(_) => {}
                 NetworkEvent::IncomingFailed(_, _) | NetworkEvent::ConnectionLost(_) => break,
                 e => panic!("application data leaked: {e:?}"),
+            }
+        }
+        a.shutdown().await.unwrap();
+        b.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn queued_ping_before_acceptance_closes_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let alice = Arc::new(IdentityManager::new(dir.path().join("alice")).unwrap());
+        let bob = Arc::new(IdentityManager::new(dir.path().join("bob")).unwrap());
+        let mut a = NetworkManager::new(0, alice.clone()).await.unwrap();
+        let mut b = NetworkManager::new(0, bob.clone()).await.unwrap();
+        b.start_listener(0).await.unwrap();
+        let port = match event(&mut b).await {
+            NetworkEvent::ListenerStarted(p) => p,
+            e => panic!("{e:?}"),
+        };
+        let target = SocketAddr::from(([127, 0, 0, 1], port));
+        a.send_message(
+            msg(MessageType::ConnectionRequest, &alice, "hello"),
+            target,
+            None,
+        )
+        .await
+        .unwrap();
+        message(&mut b).await;
+        a.send_message(msg(MessageType::Ping, &alice, "keep alive"), target, None)
+            .await
+            .unwrap();
+        loop {
+            match event(&mut a).await {
+                NetworkEvent::ConnectionEstablished(_) => {}
+                NetworkEvent::ConnectionFailed(_, e) => {
+                    assert!(e.contains("accepted conversation"));
+                    break;
+                }
+                e => panic!("unexpected {e:?}"),
             }
         }
         a.shutdown().await.unwrap();
