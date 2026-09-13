@@ -1013,6 +1013,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "snow",
+ "socket2",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

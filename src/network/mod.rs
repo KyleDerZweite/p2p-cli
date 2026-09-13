@@ -3,6 +3,8 @@ use tokio::sync::mpsc;
 
 pub mod addr;
 pub mod connection;
+mod handshake;
+pub mod invitation;
 pub mod messages;
 
 pub use connection::ConnectionManager;
@@ -19,12 +21,13 @@ pub enum NetworkEvent {
     IncomingFailed(SocketAddr, String),
     ListenerStarted(u16),
     ListenerFailed(String),
+    ListenerWarning(String),
 }
 
 /// Commands that can be sent to the network layer
 #[derive(Debug, Clone)]
 pub enum NetworkCommand {
-    SendMessage(NetworkMessage, SocketAddr),
+    SendMessage(NetworkMessage, SocketAddr, Option<String>),
     StartListener(u16),
     StopListener,
     Disconnect(SocketAddr),
@@ -39,11 +42,15 @@ pub struct NetworkManager {
 
 impl NetworkManager {
     /// Create a new network manager
-    pub async fn new(_port: u16) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(
+        _port: u16,
+        identity: std::sync::Arc<crate::crypto::IdentityManager>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (command_sender, command_receiver) = mpsc::channel(128);
         let (event_sender, event_receiver) = mpsc::channel(128);
 
-        let connection_manager = ConnectionManager::new(event_sender, command_receiver).await?;
+        let connection_manager =
+            ConnectionManager::new(event_sender, command_receiver, identity).await?;
 
         // Start the connection manager task
         let connection_task = tokio::spawn(async move {
@@ -71,9 +78,14 @@ impl NetworkManager {
         &self,
         message: NetworkMessage,
         target: SocketAddr,
+        expected_identity: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.command_sender
-            .send(NetworkCommand::SendMessage(message, target))
+            .send(NetworkCommand::SendMessage(
+                message,
+                target,
+                expected_identity,
+            ))
             .await
             .map_err(|e| format!("Failed to send message command: {}", e))?;
         Ok(())
@@ -104,6 +116,9 @@ impl NetworkManager {
             .send(NetworkCommand::StopListener)
             .await
             .map_err(|e| format!("Failed to send stop listener command: {}", e))?;
+        self._connection_task
+            .await
+            .map_err(|e| format!("Network shutdown failed: {e}"))?;
         Ok(())
     }
 }
