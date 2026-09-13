@@ -122,6 +122,37 @@ mod tests {
         proof.key = bob.get_public_key_base64();
         assert!(proof.verify(&[1; 32], true).is_err());
     }
+    #[test]
+    fn mitm_cannot_forward_identity_proof_between_two_noise_channels() {
+        fn channel_hash() -> Vec<u8> {
+            let initiator = snow::Builder::new(PATTERN.parse().unwrap());
+            let responder = snow::Builder::new(PATTERN.parse().unwrap());
+            let alice_key = initiator.generate_keypair().unwrap();
+            let relay_key = responder.generate_keypair().unwrap();
+            let mut alice = initiator.local_private_key(&alice_key.private).unwrap().build_initiator().unwrap();
+            let mut relay = responder.local_private_key(&relay_key.private).unwrap().build_responder().unwrap();
+            let mut wire = [0; 1024];
+            let mut plaintext = [0; 1024];
+            let n = alice.write_message(&[], &mut wire).unwrap();
+            relay.read_message(&wire[..n], &mut plaintext).unwrap();
+            let n = relay.write_message(&[], &mut wire).unwrap();
+            alice.read_message(&wire[..n], &mut plaintext).unwrap();
+            let n = alice.write_message(&[], &mut wire).unwrap();
+            relay.read_message(&wire[..n], &mut plaintext).unwrap();
+            assert_eq!(alice.get_handshake_hash(), relay.get_handshake_hash());
+            alice.get_handshake_hash().to_vec()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let alice = IdentityManager::new(dir.path().join("alice")).unwrap();
+        let alice_to_mitm = channel_hash();
+        let mitm_to_bob = channel_hash();
+        assert_ne!(alice_to_mitm, mitm_to_bob);
+        // A terminating intermediary can decrypt Alice's proof, but forwarding
+        // it to Bob cannot authenticate the intermediary's second channel.
+        let stolen_proof = Proof::new(&alice, &alice_to_mitm, true);
+        assert!(stolen_proof.verify(&mitm_to_bob, true).is_err());
+    }
+
     #[tokio::test]
     async fn authenticates_both_parties_on_real_tcp() {
         let dir = tempfile::tempdir().unwrap();
