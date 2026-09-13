@@ -27,7 +27,14 @@ impl IdentityManager {
         if path.exists() {
             Self::load_from_file(identity_path)
         } else {
-            Self::generate_new(identity_path)
+            match Self::generate_new(path) {
+                Err(P2PError::IoError(error))
+                    if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                {
+                    Self::load_from_file(path)
+                }
+                result => result,
+            }
         }
     }
 

@@ -34,37 +34,15 @@ impl CryptoManager {
     }
 
     fn get_or_create_storage_key() -> Result<Key<Aes256Gcm>, Box<dyn std::error::Error>> {
-        let configured_key = env::var("DB_KEY").ok().or_else(|| {
-            let dirs = ProjectDirs::from("com", "kylederzweite", "p2p-cli")?;
-            let path = dirs.config_dir().join(".env");
-            #[cfg(unix)]
-            if path.exists() {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-            }
-            let content = fs::read_to_string(path).ok()?;
-            content
-                .lines()
-                .find_map(|line| line.strip_prefix("DB_KEY=").map(str::to_owned))
-        });
-        if let Some(key_hex) = configured_key {
-            let key_bytes = hex::decode(key_hex)?;
-            if key_bytes.len() != 32 {
-                return Err("DB_KEY must be 32 bytes (64 hex chars)".into());
-            }
-            return Ok(*Key::<Aes256Gcm>::from_slice(&key_bytes));
+        match env::var("DB_KEY") {
+            Ok(value) => return parse_storage_key(&value),
+            Err(env::VarError::NotUnicode(_)) => return Err("DB_KEY is not valid text".into()),
+            Err(env::VarError::NotPresent) => {}
         }
-
-        let key = Aes256Gcm::generate_key(&mut AesRng);
-        let proj_dirs = ProjectDirs::from("com", "kylederzweite", "p2p-cli")
+        let dirs = ProjectDirs::from("com", "kylederzweite", "p2p-cli")
             .ok_or("could not determine application config directory")?;
-        fs::create_dir_all(proj_dirs.config_dir())?;
-        let env_path = proj_dirs.config_dir().join(".env");
-        write_secret(
-            &env_path,
-            format!("DB_KEY={}\n", hex::encode(key)).as_bytes(),
-        )?;
-        Ok(key)
+        fs::create_dir_all(dirs.config_dir())?;
+        load_or_create_storage_key(&dirs.config_dir().join(".env"))
     }
 
     pub fn get_public_key_base64(&self) -> Result<String, Box<dyn std::error::Error>> {
@@ -115,21 +93,143 @@ impl CryptoManager {
     }
 }
 
-#[cfg(unix)]
-pub(crate) fn write_secret(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(data)?;
-    file.sync_all()
+fn parse_storage_key(value: &str) -> Result<Key<Aes256Gcm>, Box<dyn std::error::Error>> {
+    let bytes = zeroize::Zeroizing::new(hex::decode(value)?);
+    if bytes.len() != 32 {
+        return Err("DB_KEY must be 32 bytes (64 hex chars)".into());
+    }
+    Ok(*Key::<Aes256Gcm>::from_slice(&bytes))
 }
 
-#[cfg(not(unix))]
+fn load_or_create_storage_key(path: &Path) -> Result<Key<Aes256Gcm>, Box<dyn std::error::Error>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err("Storage key must be a regular file, not a symlink or directory".into())
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+    match fs::read_to_string(path) {
+        Ok(content) => {
+            let content = zeroize::Zeroizing::new(content);
+            let keys: Vec<_> = content
+                .lines()
+                .filter_map(|line| line.strip_prefix("DB_KEY="))
+                .collect();
+            if keys.len() != 1 {
+                return Err(format!(
+                    "{} must contain exactly one DB_KEY; refusing to replace existing history key",
+                    path.display()
+                )
+                .into());
+            }
+            let key = parse_storage_key(keys[0])?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            }
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let key = Aes256Gcm::generate_key(&mut AesRng);
+            let content = zeroize::Zeroizing::new(format!("DB_KEY={}\n", hex::encode(key)));
+            match write_secret(path, content.as_bytes()) {
+                Ok(()) => Ok(key),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    load_or_create_storage_key(path)
+                }
+                Err(error) => Err(error.into()),
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Publish a complete private secret atomically, never replacing an existing key.
 pub(crate) fn write_secret(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    fs::write(path, data)
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(data)?;
+    file.as_file().sync_all()?;
+    file.persist_noclobber(path).map_err(|e| e.error)?;
+    fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn corrupt_key_is_never_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        for content in [
+            "",
+            "OTHER=value\n",
+            "DB_KEY=broken\n",
+            "DB_KEY=00\nDB_KEY=11\n",
+        ] {
+            fs::write(&path, content).unwrap();
+            assert!(load_or_create_storage_key(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+    #[test]
+    fn concurrent_creators_share_one_durable_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    load_or_create_storage_key(&path).unwrap()
+                })
+            })
+            .collect();
+        let keys: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(keys.iter().all(|k| k == &keys[0]));
+        assert_eq!(load_or_create_storage_key(&path).unwrap(), keys[0]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_fails_without_replacing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let target = dir.path().join("absent");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(load_or_create_storage_key(&path).is_err());
+        assert!(!target.exists());
+    }
+    #[test]
+    fn secret_write_cannot_clobber() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret");
+        write_secret(&path, b"original").unwrap();
+        assert_eq!(
+            write_secret(&path, b"replacement").unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(path).unwrap(), b"original");
+    }
 }
