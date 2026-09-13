@@ -99,20 +99,8 @@ async fn run_app(port: u16, security_level: SecurityLevel, verbose: bool) -> P2P
         .await
         .map_err(|e| P2PError::NetworkError(e.to_string()))?;
 
-    // Look up our public IP in the background so it can be shared with peers
-    let (public_ip_tx, mut public_ip_rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        if let Some(ip) = network::addr::fetch_public_ip().await {
-            let _ = public_ip_tx.send(ip.to_string());
-        }
-    });
-
     // Main event loop
     loop {
-        // Pick up the public IP lookup result once it arrives
-        if let Ok(ip) = public_ip_rx.try_recv() {
-            app.set_public_ip(ip);
-        }
         // Handle UI events (with timeout)
         if let Some(ui_event) = ui_manager
             .poll_event(100)

@@ -18,7 +18,7 @@ A terminal-based peer-to-peer messenger written in Rust. Every application messa
 - **Four Security Levels** - From quick messaging to maximum security
 - **Persistent Encrypted History** - SQLite storage with AES-256 encryption
 - **Modern TUI** - Ratatui-based terminal interface with scrolling and contextual shortcut hints
-- **Address Sharing** - Shows your localhost/LAN/public `IP:PORT` so peers can reach you (`/myip`)
+- **Address Sharing** - Shows your localhost/LAN `IP:PORT` so peers can reach you (`/myip`)
 - **Chat Commands** - `/help`, `/fingerprint`, `/alias`, and more
 
 ## Installation
@@ -54,14 +54,14 @@ p2p-cli -p 9000 -s secure -v
 
 ## Connecting Across Networks
 
-The app shows your shareable addresses in the status panel when idle (also via `/myip`). Share the right one with your peer over any other channel (another messenger, phone, etc.), then chat here over the encrypted P2P connection.
+The application design follows a direct-only model: two clients communicating directly with no accounts, servers, or relays.
 
 - **Same machine:** connect to `127.0.0.1:<port>`.
-- **Same LAN:** connect to the other person's LAN address (e.g. `192.168.1.x:8080`). Works out of the box unless a local firewall blocks the port.
-- **Over the internet:** connect to the other person's public `IP:PORT`. Because every message opens a new connection to the peer's listener, **both** sides must be reachable — each person needs their listening port forwarded on their router and allowed through their firewall (e.g. `sudo firewall-cmd --add-port=8080/tcp` on Fedora). One reachable side is not enough.
-- **Behind CGNAT or without router access:** direct connections won't work. The practical workaround is a mesh VPN like Tailscale or WireGuard on both machines — then connect to the peer's VPN address exactly as on a LAN. Built-in NAT traversal is on the roadmap.
+- **Same LAN:** connect to the other person's LAN address, such as `192.168.1.x:8080`, or find them via local mDNS discovery.
+- **Across the internet:** connect to the listener's reachable address. In the current implementation, every message opens a fresh TCP connection, requiring both sides to forward their listening port. The planned transport replaces this with a single persistent, bidirectional TCP connection per conversation, meaning only one side needs to be reachable.
+- **Reaching peers without manual port forwarding:** direct connections work across networks when one side has a reachable global IPv6 address or when the local router supports automatic port mapping via PCP or UPnP. When network firewalls prevent direct connections on both sides, direct communication is not possible without changing network settings or using a mesh VPN like Tailscale or WireGuard. The app intentionally includes no relay fallback, preserving a strict two-node architecture.
 
-Your public IP is looked up once at startup via api.ipify.org (best effort; the app works fine without it). IP addresses are routing metadata, not secrets — sharing yours with an intended peer is safe, though it does reveal your approximate location to them.
+Candidate addresses are shared out-of-band by exchanging a self-contained invitation containing the peer's expected public key and address options.
 
 ## Security Levels
 
@@ -127,11 +127,18 @@ When running in TOFU mode (`-s tofu`), the app:
 
 ## Threat model and limitations
 
-The design aims to protect message content and integrity against passive network observers, active network modification, replay, and later compromise of long-term identity keys after ephemeral channel secrets have been erased. TOFU cannot identify an attacker who successfully intercepts the very first contact; compare fingerprints through an independent channel before assigning trust.
+The design aims to protect message content and integrity against passive network observers, active network modification, replay, and later compromise of long-term identity keys after ephemeral channel secrets have been erased. TOFU cannot identify an attacker who successfully intercepts the very first contact. Compare fingerprints through an independent channel before assigning trust.
 
-It does **not** protect an unlocked or compromised endpoint, terminal capture, malicious dependencies, traffic-analysis metadata (IP addresses, timing, and approximate sizes), denial of service by a sufficiently capable network attacker, or plaintext copied outside the application. Persistent tiers keep peer/trust metadata in SQLite; only message bodies are encrypted. Maximum prevents new persistent chat/trust records but does not erase files created by earlier runs. Secure deletion on SSDs and journaled filesystems cannot be guaranteed by an application.
+It does not protect an unlocked or compromised endpoint, terminal capture, malicious dependencies, traffic analysis metadata like IP addresses, timing, and packet sizes, denial of service by a network attacker, or plaintext copied outside the application. Persistent tiers keep peer and trust metadata in SQLite; only message bodies are encrypted. Maximum prevents new persistent chat and trust records, but does not erase files created by earlier runs. Secure deletion on SSDs and journaled filesystems cannot be guaranteed by an application.
 
-This project has not received an independent cryptographic audit. “Military grade” is intentionally not claimed: concrete algorithms, state transitions, and limitations are more useful and testable than that label.
+### Known transport concerns under review
+
+- **Channel binding:** Ephemeral Noise keypairs are generated per message, but the handshake hash is not yet cryptographically bound to the persistent Ed25519 identity signature. The application signature does not authenticate the specific ephemeral transport session, which is an open gap under review.
+- **Signed envelope mutation:** `App::handle_network_event` replaces `from_ip` with the observed source address before signature verification. Because `signing_bytes()` includes `from_ip`, this can break verification on WAN connections. Transport routing metadata must be separated from the signed application payload.
+- **Port scanner noise:** The TCP listener reports inbound handshake failures to the user interface. When exposed to the open internet, automated internet scanners touching the port trigger false connection alerts.
+- **External IP lookup:** The startup lookup to `api.ipify.org` currently runs over unencrypted HTTP. This call will be removed entirely, replacing external web lookups with local interface enumeration, global IPv6 detection, and router responses.
+
+This project has not received an independent cryptographic audit. Concrete algorithms, state transitions, and documented limitations are more useful and testable than marketing claims.
 
 ## Project Structure
 
@@ -147,10 +154,16 @@ Key crates: **tokio** (async runtime), **ratatui** (TUI), **snow** (Noise), **ed
 - [x] Chat commands
 - [x] Message scrolling
 - [x] Fresh ephemeral transport keys for each application message
+- [ ] Fix signature verification by separating transport metadata from signed envelopes
+- [ ] Bind Noise transport handshake hash to persistent Ed25519 identity signatures
+- [ ] Single persistent bidirectional TCP connection per conversation
+- [x] Remove external HTTP IP lookup API; derive addresses locally
+- [ ] Direct global IPv6 connectivity
+- [ ] Optional local router port mapping via PCP and UPnP with explicit user prompt
+- [ ] Self-contained copyable connection invitations containing public key and candidate addresses
+- [ ] Link-local LAN discovery via mDNS
 - [ ] File transfer
 - [ ] Multi-peer connections
-- [ ] NAT traversal
-- [ ] mDNS peer discovery
 
 ## License
 
