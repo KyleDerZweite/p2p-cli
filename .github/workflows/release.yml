@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
       - name: Set up Rust
@@ -20,10 +20,17 @@ jobs:
         run: cargo test --release --locked
       - name: Check Linux terminal workflow
         run: python3 tests/linux_smoke.py target/release/p2p-cli
-      - name: Upload release asset
+      - name: Publish Linux release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cp target/release/p2p-cli p2p-cli-linux-x86_64
-          gh release upload "${{ github.ref_name }}" p2p-cli-linux-x86_64 --clobber
+          sha256sum p2p-cli-linux-x86_64 > SHA256SUMS
+          test -f "docs/releases/$RELEASE_TAG.md"
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
+          fi
+          gh release upload "$RELEASE_TAG" p2p-cli-linux-x86_64 SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest --title "$RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"

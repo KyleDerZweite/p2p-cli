@@ -4,9 +4,19 @@ A Linux terminal messenger for two people who can reach each other directly. Bot
 
 One peer must have a reachable TCP listening port. That can be a LAN address, global IPv6 with firewall permission, or a manually forwarded IPv4 port. The other peer connects once; both directions use that same encrypted connection. Some network pairs cannot connect under these constraints.
 
-## Build and chat
+## Install and chat
 
-Install Rust, a C compiler, and iproute2 on Linux. SQLite is bundled. Build and install:
+Download the x86-64 Linux binary and `SHA256SUMS` from [v0.3](https://github.com/KyleDerZweite/p2p-cli/releases/tag/v0.3). The binary is built on Ubuntu 22.04 with glibc. Verify it and make it executable:
+
+```sh
+sha256sum --check SHA256SUMS
+chmod +x p2p-cli-linux-x86_64
+./p2p-cli-linux-x86_64 --help
+```
+
+The commands below use `p2p-cli`. Substitute `./p2p-cli-linux-x86_64` when running the downloaded binary directly. Install iproute2 for local address discovery.
+
+To build from source, install Rust and a C compiler, then run this in the repository. SQLite is bundled:
 
 ```sh
 cargo install --path . --locked
@@ -61,7 +71,7 @@ The default is `--security tofu`. Existing flags remain available:
 | --- | --- |
 | `quick` | Session approval, encrypted history; no implicit persistent trust |
 | `tofu` | Explicit approval can remember identities; invitations pin the expected key |
-| `secure` | Alias policy for TOFU, retained for existing commands |
+| `secure` | Same behaviour as TOFU; retained for existing commands |
 | `max` | Memory-only history and trust; persistent identity remains |
 
 `/trust` explicitly remembers a peer, `/untrust` removes remembered trust, `/fingerprint` displays both fingerprints, `/alias name` assigns a local name, `/status` reports the connection, `/myip` lists candidates, and `/clear` clears only the visible transcript. `/help` lists shortcuts. Local policy cannot control what the other person stores.
