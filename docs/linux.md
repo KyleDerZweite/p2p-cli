@@ -4,9 +4,9 @@ p2p-cli connects directly over TCP. Neither peer needs an account, public addres
 
 ## Getting connected
 
-Build with `cargo build --release`. Run `./target/release/p2p-cli --help` for startup options. Linux interface enumeration uses `ip` from iproute2. If it is missing, discovery falls back to the default IPv4 route and reports the limitation.
+Follow the [quick start](../README.md) to install the client, generate an invitation, and start the listener. `--invite` prints the invitation and exits; start chat separately with the same profile and port. Both applications must stay running.
 
-Generate an invitation with `p2p-cli --invite`. Give it to the other person through a channel where they can verify it came from you. They can pass it with `p2p-cli --connect '<invitation>'` or paste it into the connection field. Keep the listener running, then approve the incoming conversation. An invitation contains a public identity key and candidate addresses. Anyone with it can attempt to contact that listener; it does not grant approval or contain a private key.
+Linux interface enumeration uses `ip` from iproute2. If it is missing, discovery falls back to the default IPv4 route and reports the limitation.
 
 On the same machine, use different listening ports and loopback addresses. On the same LAN, use the listener's LAN address. Across the internet, use a reachable global IPv6 address or configure TCP forwarding on the listener's router to its LAN address and listening port. Share a router-observed public address with `--address IP:PORT` when generating the invitation. Bracket IPv6 literals, for example `[2001:db8::1]:8080`. That example is a documentation address, not a working destination.
 
@@ -16,7 +16,19 @@ The application does not broadcast identities through mDNS or automatically chan
 
 ## Diagnosing failures
 
-Run `p2p-cli --diagnose` to inspect local address candidates and discovery limitations. Keep the full connection error, including destination, phase, and operating system code. A TCP failure happens before encrypted session authentication; an authentication failure means TCP reached a process, but that process did not complete the expected secure protocol.
+```sh
+p2p-cli --diagnose
+p2p-cli --diagnose 192.168.1.20:8080
+p2p-cli --connect 'p2p-cli:v1:...' --log connection.log
+```
+
+`--diagnose` prints assigned addresses and discovery limitations. With a target, it tests TCP reachability. A successful probe does not verify the remote identity. Interactive connection failures include the phase, destination, observed error, and suggested checks. Invitation addresses are tried in order with the same expected identity.
+
+`--log` creates a new owner-only file, capped near 4 MiB. It records network metadata and failures, excludes chat text and keys, and refuses existing paths. Maximum mode rejects persistent logs. Unsolicited scanner failures go to diagnostics rather than the chat display.
+
+A timeout cannot identify which router or firewall dropped a packet. The app reports that uncertainty. Exact router policy requires the router's response or its logs.
+
+Keep the full connection error, including destination, phase, and operating system code. A TCP failure happens before encrypted session authentication; an authentication failure means TCP reached a process, but that process did not complete the expected secure protocol.
 
 | Evidence | Meaning and next step |
 | --- | --- |

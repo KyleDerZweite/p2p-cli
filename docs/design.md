@@ -10,7 +10,9 @@ The external seam for networking is `NetworkManager`: start listening, send a si
 
 `CryptoManager` encrypts local history. Network confidentiality belongs entirely to networking. The earlier pass-through message encryption and unused per-process public identifier were removed. `MessageDB` uses persistent identity for peer history, so reconnecting with a new transport does not create a new contact.
 
-The terminal is an adapter for user input and display. Bracketed paste enters text without sending it. Input is bounded, and peer control sequences are filtered before rendering. The diagnostic file is opt-in, private, bounded, and receives network metadata rather than chat envelopes.
+The [domain glossary](CONTEXT.md) defines the terms used here.
+
+The terminal is an adapter for user input and display. Bracketed paste enters text without sending it. Input is bounded, and peer control sequences are filtered before rendering. Messages and diagnostics wrap to the terminal width; scrolling counts rendered rows. The diagnostic file is opt-in, private, bounded, and receives network metadata rather than chat envelopes.
 
 Concrete Rust structs are sufficient at these seams. There are no alternative transport adapters or speculative repository traits. Tests cross the real module interfaces with loopback TCP, temporary SQLite profiles, and Linux pseudo-terminals.
 
