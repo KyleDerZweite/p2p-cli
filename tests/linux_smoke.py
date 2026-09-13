@@ -110,14 +110,20 @@ def run():
                 alice = Terminal(envs[0], ["-p", str(ports[0])])
                 terminals.append(alice)
                 until(terminals, lambda: b"Listening" in alice.output or b"Online" in alice.output, "listener ready")
-                bob = Terminal(envs[1], ["-p", str(ports[1]), "--connect", invitation])
+                args = ["-p", str(ports[1])]
+                if cycle == 0:
+                    args += ["--connect", invitation]
+                bob = Terminal(envs[1], args)
                 terminals.append(bob)
+                if cycle:
+                    until(terminals, lambda: b"Online" in bob.output, "second client ready")
+                    bob.send("\x1b[200~" + invitation + "\x1b[201~\r")
                 until(terminals, lambda: b"Accept" in alice.output, "incoming approval")
                 alice.send("a")
                 until(terminals, lambda: b"Connected" in bob.output, "client connected")
                 if cycle:
                     until(terminals, lambda: b"smoke-alice-0" in alice.output and b"smoke-bob-0" in bob.output, "history restored after restart")
-                alice.send(f"smoke-alice-{cycle}\r")
+                alice.send(f"\x1b[200~smoke-alice-{cycle}\x1b[201~\r")
                 until(terminals, lambda: f"smoke-alice-{cycle}".encode() in bob.output, "Alice to Bob")
                 bob.send(f"smoke-bob-{cycle}\r")
                 until(terminals, lambda: f"smoke-bob-{cycle}".encode() in alice.output, "Bob to Alice")

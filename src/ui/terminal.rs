@@ -1,4 +1,5 @@
 use crossterm::{
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,10 +20,20 @@ impl TerminalManager {
         // Mouse capture is intentionally NOT enabled: the app has no mouse
         // interactions, and capture would break the terminal's native
         // select-to-copy for addresses and fingerprints
-        execute!(stdout, EnterAlternateScreen)?;
-
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
+            let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
         let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
+        let terminal = match Terminal::new(backend) {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
+                let _ = disable_raw_mode();
+                return Err(error.into());
+            }
+        };
 
         Ok(Self { terminal })
     }
@@ -45,7 +56,11 @@ impl TerminalManager {
     /// Clean up terminal and restore normal mode
     pub fn cleanup(mut self) -> Result<(), Box<dyn std::error::Error>> {
         disable_raw_mode()?;
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            self.terminal.backend_mut(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        )?;
         self.terminal.show_cursor()?;
         Ok(())
     }
@@ -68,7 +83,11 @@ impl Drop for TerminalManager {
     fn drop(&mut self) {
         // Ensure cleanup happens even if cleanup() wasn't called
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }

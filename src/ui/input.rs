@@ -14,31 +14,32 @@ impl InputHandler {
     /// Get the next input event (blocking)
     pub fn next_event(&mut self) -> Result<Option<UiEvent>, Box<dyn std::error::Error>> {
         loop {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if let Some(ui_event) = self.convert_key_event(key.code, key.modifiers) {
-                        return Ok(Some(ui_event));
-                    }
-                }
+            if let Some(event) = self.convert_event(event::read()?) {
+                return Ok(Some(event));
             }
         }
     }
 
-    /// Poll for input events with timeout (non-blocking)
+    /// Poll for one input event with timeout.
     pub fn poll_event(
         &mut self,
         timeout_ms: u64,
     ) -> Result<Option<UiEvent>, Box<dyn std::error::Error>> {
         if event::poll(Duration::from_millis(timeout_ms))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if let Some(ui_event) = self.convert_key_event(key.code, key.modifiers) {
-                        return Ok(Some(ui_event));
-                    }
-                }
-            }
+            return Ok(self.convert_event(event::read()?));
         }
         Ok(None)
+    }
+
+    fn convert_event(&self, event: Event) -> Option<UiEvent> {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                self.convert_key_event(key.code, key.modifiers)
+            }
+            Event::Paste(text) => Some(UiEvent::Paste(text)),
+            Event::Resize(width, height) => Some(UiEvent::Resize(width, height)),
+            _ => None,
+        }
     }
 
     /// Convert crossterm key events to UI events

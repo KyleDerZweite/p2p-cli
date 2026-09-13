@@ -5,7 +5,7 @@ use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::error::{P2PError, P2PResult};
 
@@ -63,7 +63,8 @@ impl IdentityManager {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(identity_path.as_ref(), fs::Permissions::from_mode(0o600))?;
         }
-        let key_bytes = fs::read(identity_path.as_ref()).map_err(P2PError::IoError)?;
+        let key_bytes =
+            Zeroizing::new(fs::read(identity_path.as_ref()).map_err(P2PError::IoError)?);
 
         if key_bytes.len() != 32 {
             return Err(P2PError::CryptoError(
@@ -88,8 +89,9 @@ impl IdentityManager {
 
     /// Save identity to file
     fn save_to_file(&self) -> P2PResult<()> {
-        let key_bytes = self.signing_key.to_bytes();
-        write_secret(Path::new(&self.identity_path), &key_bytes).map_err(P2PError::IoError)?;
+        let key_bytes = Zeroizing::new(self.signing_key.to_bytes());
+        write_secret(Path::new(&self.identity_path), key_bytes.as_ref())
+            .map_err(P2PError::IoError)?;
         Ok(())
     }
 
@@ -193,14 +195,6 @@ impl IdentityManager {
     /// Get the identity file path (as a string) where this identity is stored
     pub fn get_identity_path(&self) -> &str {
         &self.identity_path
-    }
-}
-
-impl Drop for IdentityManager {
-    fn drop(&mut self) {
-        // Zeroize the signing key on drop for security
-        let mut key_bytes = self.signing_key.to_bytes();
-        key_bytes.zeroize();
     }
 }
 

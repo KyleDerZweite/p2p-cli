@@ -27,6 +27,7 @@ pub enum UiEvent {
     /// Copy our shareable address to the system clipboard
     CopyAddress,
     CharInput(char),
+    Paste(String),
     Resize(u16, u16),
     SecurityLevelSelect(SecurityLevel),
     ShowSecuritySelection,
