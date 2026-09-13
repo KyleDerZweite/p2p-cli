@@ -6,7 +6,7 @@ A working Linux terminal messenger for pairwise text chat, with authenticated di
 
 Implementation is on `main`. The three implementation agents worked on security, persistent transport, and Linux reachability/storage/terminal verification. The integration uses the existing Rust crypto libraries and one added direct socket2 dependency, already present transitively, for explicit IPv4/IPv6 binding.
 
-Verification: 42 Rust tests, strict Clippy, formatting, and real Linux terminal acceptance. The terminal test covers separate profiles, acceptance, both message directions, pasted invitations, restart/history, address fallback, identity mismatch, private logs, and Maximum storage policy. `docs/design.md` records the implemented module interfaces; `docs/linux.md` records network limits.
+Verification: Rust tests, strict Clippy, formatting, and real Linux terminal acceptance. The terminal test covers separate profiles, acceptance, both message directions, pasted invitations, restart/history, address fallback, identity mismatch, private logs, and Maximum storage policy. `docs/design.md` records the implemented module interfaces; `docs/linux.md` records network limits.
 
 ## Decisions so far
 

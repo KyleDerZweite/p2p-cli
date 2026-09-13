@@ -432,10 +432,6 @@ impl App {
             {
                 return Err("message outside an established session".into())
             }
-            KeyRotationRequest
-            | KeyRotationResponse
-            | IdentityVerification
-            | IdentityTrustResponse => return Err("unsupported protocol message type".into()),
             _ => {}
         }
         if matches!(message.msg_type, ConnectionAccept | ConnectionDecline) {
@@ -1050,8 +1046,6 @@ impl App {
         &mut self,
         identity_key: &str,
         fingerprint: &str,
-        _session_key: &str,
-        _signature: &str,
         peer_ip: &str,
     ) -> (IdentityStatus, bool) {
         let is_localhost = Self::is_localhost_ip(peer_ip);
@@ -1112,40 +1106,35 @@ impl App {
                     let peer_security_level = msg.security_level.unwrap_or(SecurityLevel::Quick);
 
                     // Check identity if TOFU mode
-                    let (identity_status, identity_alias, is_localhost) = if let (
-                        Some(id_key),
-                        Some(fp),
-                        Some(sig),
-                    ) = (
-                        &msg.identity_key,
-                        &msg.identity_fingerprint,
-                        &msg.identity_signature,
-                    ) {
-                        let (status, is_local) =
-                            self.verify_peer_identity(id_key, fp, &public_key, sig, &msg.from_ip);
-                        let alias = if status == IdentityStatus::Verified
-                            || status == IdentityStatus::LocalSelf
+                    let (identity_status, identity_alias, is_localhost) =
+                        if let (Some(id_key), Some(fp)) =
+                            (&msg.identity_key, &msg.identity_fingerprint)
                         {
-                            if status == IdentityStatus::LocalSelf {
-                                Some("You (local)".to_string())
+                            let (status, is_local) =
+                                self.verify_peer_identity(id_key, fp, &msg.from_ip);
+                            let alias = if status == IdentityStatus::Verified
+                                || status == IdentityStatus::LocalSelf
+                            {
+                                if status == IdentityStatus::LocalSelf {
+                                    Some("You (local)".to_string())
+                                } else {
+                                    self.message_db
+                                        .get_trusted_identity(fp)
+                                        .ok()
+                                        .flatten()
+                                        .and_then(|t| t.alias)
+                                }
                             } else {
-                                self.message_db
-                                    .get_trusted_identity(fp)
-                                    .ok()
-                                    .flatten()
-                                    .and_then(|t| t.alias)
-                            }
+                                None
+                            };
+                            (status, alias, is_local)
                         } else {
-                            None
+                            (
+                                IdentityStatus::None,
+                                None,
+                                Self::is_localhost_ip(&msg.from_ip),
+                            )
                         };
-                        (status, alias, is_local)
-                    } else {
-                        (
-                            IdentityStatus::None,
-                            None,
-                            Self::is_localhost_ip(&msg.from_ip),
-                        )
-                    };
 
                     self.state.incoming_connection = Some(IncomingConnection {
                         from_ip: msg.from_ip,
@@ -1177,17 +1166,11 @@ impl App {
                     }
 
                     // Handle identity verification
-                    let (identity_status, is_localhost) = if let (
-                        Some(id_key),
-                        Some(fp),
-                        Some(sig),
-                    ) = (
-                        &msg.identity_key,
-                        &msg.identity_fingerprint,
-                        &msg.identity_signature,
-                    ) {
+                    let (identity_status, is_localhost) = if let (Some(id_key), Some(fp)) =
+                        (&msg.identity_key, &msg.identity_fingerprint)
+                    {
                         let (status, is_local) =
-                            self.verify_peer_identity(id_key, fp, &public_key, sig, &msg.from_ip);
+                            self.verify_peer_identity(id_key, fp, &msg.from_ip);
                         self.state.peer_identity_key = Some(id_key.clone());
                         self.state.peer_fingerprint = Some(fp.clone());
                         if status == IdentityStatus::LocalSelf {
@@ -1284,7 +1267,6 @@ impl App {
                     }
                 }
             }
-            _ => {}
         }
     }
 

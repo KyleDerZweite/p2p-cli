@@ -1,7 +1,6 @@
 # IDEs
 .idea/
 .vscode/
-/.c*
 
 # Rust / Cargo
 # Ignore build artifacts and cache.
@@ -20,3 +19,6 @@ Thumbs.db
 # Application specific
 messages.db
 .p2p_identity
+p2p_identity
+__pycache__/
+*.log

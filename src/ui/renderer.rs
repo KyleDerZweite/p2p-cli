@@ -159,7 +159,8 @@ impl Renderer {
                     IdentityStatus::ClonedIdentity => {
                         text_lines.push("Identity: ⚠ CLONED IDENTITY DETECTED!".to_string());
                         text_lines.push(
-                            "WARNING: Someone may have stolen your identity file!".to_string(),
+                            "This remote peer is using the same identity as this client."
+                                .to_string(),
                         );
                     }
                     IdentityStatus::None => {
@@ -218,9 +219,7 @@ impl Renderer {
                     format!(" [✓ TRUSTED: {}]", alias)
                 }
                 IdentityStatus::LocalSelf => " [🏠 LOCAL/SELF]".to_string(),
-                IdentityStatus::ClonedIdentity => {
-                    " [⚠ CLONED IDENTITY - YOUR IDENTITY WAS STOLEN!]".to_string()
-                }
+                IdentityStatus::ClonedIdentity => " [⚠ SAME IDENTITY AS THIS CLIENT]".to_string(),
                 IdentityStatus::None => {
                     // In QUICK MODE, still show LOCAL if localhost
                     if incoming.is_localhost {

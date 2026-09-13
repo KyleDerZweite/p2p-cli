@@ -9,28 +9,21 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            binary: p2p-cli
-            asset: p2p-cli-linux-x86_64
-          - os: windows-latest
-            binary: p2p-cli.exe
-            asset: p2p-cli-windows-x86_64.exe
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Test
-        run: cargo test --release
+        run: cargo test --release --locked
+      - name: Check Linux terminal workflow
+        run: python3 tests/linux_smoke.py target/release/p2p-cli
       - name: Upload release asset
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp "target/release/${{ matrix.binary }}" "${{ matrix.asset }}"
-          gh release upload "${{ github.ref_name }}" "${{ matrix.asset }}" --clobber
+          cp target/release/p2p-cli p2p-cli-linux-x86_64
+          gh release upload "${{ github.ref_name }}" p2p-cli-linux-x86_64 --clobber

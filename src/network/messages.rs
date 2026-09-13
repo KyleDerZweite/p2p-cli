@@ -30,12 +30,6 @@ pub enum MessageType {
     TextMessage,
     Ping,
     PingResponse,
-    // Security-related message types
-    KeyRotationRequest,
-    KeyRotationResponse,
-    IdentityVerification,
-    /// Response to identity verification (trust decision)
-    IdentityTrustResponse,
 }
 
 impl NetworkMessage {
@@ -147,5 +141,25 @@ impl NetworkMessage {
         let mut unsigned = self.clone();
         unsigned.identity_signature = None;
         serde_json::to_vec(&unsigned)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unimplemented_protocol_types() {
+        for kind in [
+            "KeyRotationRequest",
+            "KeyRotationResponse",
+            "IdentityVerification",
+            "IdentityTrustResponse",
+        ] {
+            let mut envelope =
+                serde_json::to_value(NetworkMessage::ping("127.0.0.1:8080".into())).unwrap();
+            envelope["msg_type"] = serde_json::Value::String(kind.into());
+            assert!(serde_json::from_value::<NetworkMessage>(envelope).is_err());
+        }
     }
 }

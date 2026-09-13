@@ -17,12 +17,12 @@ use ui::UiManager;
 
 const DEFAULT_PORT: u16 = 8080;
 
-/// A modern, secure, terminal-based peer-to-peer messenger
+/// A direct, authenticated two-party terminal messenger
 #[derive(Parser, Debug)]
 #[command(name = "p2p-cli")]
 #[command(author = "KyleDerZweite")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(about = "A modern, secure, terminal-based peer-to-peer messenger", long_about = None)]
+#[command(about = "A direct, authenticated two-party terminal messenger", long_about = None)]
 #[command(after_help = "SECURITY LEVELS:
   0, quick    Encrypted + signed; approve peers per session
   1, tofu     Persistently pin peer identities
