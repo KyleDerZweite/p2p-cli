@@ -1,0 +1,39 @@
+# Linux direct connections
+
+p2p-cli connects directly over TCP. Neither peer needs an account, public address lookup, rendezvous server, relay, or hosted VPN. Both applications must be running to chat. At least one peer must have an address and listening TCP port that the other can reach.
+
+## Getting connected
+
+Build with `cargo build --release`. Run `./target/release/p2p-cli --help` for startup options. Linux interface enumeration uses `ip` from iproute2. If it is missing, discovery falls back to the default IPv4 route and reports the limitation.
+
+Generate an invitation with `p2p-cli --invite`. Give it to the other person through a channel where they can verify it came from you. They can pass it with `p2p-cli --connect '<invitation>'` or paste it into the connection field. Keep the listener running, then approve the incoming conversation. An invitation contains a public identity key and candidate addresses. Anyone with it can attempt to contact that listener; it does not grant approval or contain a private key.
+
+On the same machine, use different listening ports and loopback addresses. On the same LAN, use the listener's LAN address. Across the internet, use a reachable global IPv6 address or configure TCP forwarding on the listener's router to its LAN address and listening port. Share a router-observed public address with `--address IP:PORT` when generating the invitation. Bracket IPv6 literals, for example `[2001:db8::1]:8080`. That example is a documentation address, not a working destination.
+
+Assigned interface addresses are only candidates. A global IPv6 address still needs host and router firewall permission. A private IPv4 address works only where the other peer has a route to that private network. Router port forwarding can stop working when DHCP changes the listener's LAN address; reserve that address in the router when needed.
+
+The application does not broadcast identities through mDNS or automatically change router configuration. Copyable invitations cover LAN use without that extra exposure. Automatic PCP/UPnP mapping can be considered later if manual forwarding becomes a practical blocker.
+
+## Diagnosing failures
+
+Run `p2p-cli --diagnose` to inspect local address candidates and discovery limitations. Keep the full connection error, including destination, phase, and operating system code. A TCP failure happens before encrypted session authentication; an authentication failure means TCP reached a process, but that process did not complete the expected secure protocol.
+
+| Evidence | Meaning and next step |
+| --- | --- |
+| Connection refused | Something rejected TCP. Check the listening application and port, host firewall, and router forwarding destination. A firewall may actively reject too. |
+| TCP timeout | No response arrived in time. An offline peer, wrong address, filtering, or NAT can all cause this. Check each side's configuration and try reversing the connection direction. |
+| No route or address unavailable | Check local connectivity and IPv6 support. Try another candidate that is reachable from this network. |
+| Permission denied | Check local firewall, process sandbox, or security policy. |
+| Address already in use | Another process owns the listening port. Stop it or choose another port. |
+| Identity mismatch | The endpoint does not have the key in the invitation or stored trust. Verify the invitation and identity with the person before accepting a replacement. |
+| Handshake failure | TCP worked, but the remote endpoint may be a different program, incompatible version, scanner, or an attacker. Compare versions and destination ports. |
+
+For local inspection, use `ip address`, `ip route`, `ip -6 route`, and `ss -ltnp`. Firewall inspection depends on the distribution, commonly `sudo nft list ruleset` or `sudo ufw status verbose`. These inspect your own machine. Router policy requires inspecting your router's own interface or logs.
+
+A timeout does not prove that a specific router rejected traffic. The application cannot truthfully name that router or rule without its response or logs. Behind carrier-grade NAT, the router's WAN address may itself be private or in `100.64.0.0/10`. Home-router forwarding alone does not make that WAN reachable. Try reachable IPv6, let the other person listen, or ask the ISP about public addressing. Some network pairs cannot connect within the project's direct-only requirement.
+
+## WireGuard
+
+WireGuard encrypts IP traffic over UDP. A tunnel run by the two peers fits the ownership constraint, but it does not solve reachability by itself. At least one reachable UDP endpoint is normally needed for a simple two-peer setup. Routers can block UDP, drop unsolicited packets, or place both peers behind NAT that prevents them from reaching each other. `PersistentKeepalive` maintains an existing NAT mapping; it does not create port forwarding through an upstream router or guarantee traversal of carrier-grade NAT.
+
+A working two-peer WireGuard tunnel can carry p2p-cli traffic using its tunnel addresses. Configuring the tunnel requires separate keys, routes, firewall rules, and usually administrator privileges. p2p-cli already encrypts and authenticates its direct connection, so WireGuard remains an optional network choice rather than a prerequisite.
