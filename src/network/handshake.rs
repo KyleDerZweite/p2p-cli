@@ -129,8 +129,16 @@ mod tests {
             let responder = snow::Builder::new(PATTERN.parse().unwrap());
             let alice_key = initiator.generate_keypair().unwrap();
             let relay_key = responder.generate_keypair().unwrap();
-            let mut alice = initiator.local_private_key(&alice_key.private).unwrap().build_initiator().unwrap();
-            let mut relay = responder.local_private_key(&relay_key.private).unwrap().build_responder().unwrap();
+            let mut alice = initiator
+                .local_private_key(&alice_key.private)
+                .unwrap()
+                .build_initiator()
+                .unwrap();
+            let mut relay = responder
+                .local_private_key(&relay_key.private)
+                .unwrap()
+                .build_responder()
+                .unwrap();
             let mut wire = [0; 1024];
             let mut plaintext = [0; 1024];
             let n = alice.write_message(&[], &mut wire).unwrap();

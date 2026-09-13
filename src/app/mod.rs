@@ -29,6 +29,9 @@ pub struct App {
     seen_message_order: VecDeque<Uuid>,
     persistent_history: bool,
     pending_network_messages: VecDeque<NetworkMessage>,
+    pending_candidates: VecDeque<std::net::SocketAddr>,
+    expected_identity: Option<String>,
+    invitation_addresses: Vec<std::net::SocketAddr>,
 }
 
 impl App {
@@ -44,6 +47,13 @@ impl App {
         let data_dir = proj_dirs.data_dir();
         std::fs::create_dir_all(config_dir)?;
         std::fs::create_dir_all(data_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for dir in [config_dir, data_dir] {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
 
         let identity_path: PathBuf = config_dir.join("p2p_identity");
         let db_path: PathBuf = data_dir.join("messages.db");
@@ -59,8 +69,7 @@ impl App {
         // Set our fingerprint in state
         state.our_fingerprint = Some(identity_manager.get_fingerprint());
 
-        // Detect LAN IP so it can be shared with peers (public IP is fetched
-        // asynchronously in main and delivered via set_public_ip)
+        // Discover a local address without a remote lookup.
         state.local_ip = crate::network::addr::local_ip().map(|ip| ip.to_string());
 
         Ok(Self {
@@ -73,6 +82,9 @@ impl App {
             seen_message_order: VecDeque::new(),
             persistent_history,
             pending_network_messages: VecDeque::new(),
+            pending_candidates: VecDeque::new(),
+            expected_identity: None,
+            invitation_addresses: Vec::new(),
         })
     }
 
@@ -92,6 +104,12 @@ impl App {
             }
             UiEvent::CharInput(c) => {
                 self.handle_char_input(c);
+                Ok(None)
+            }
+            UiEvent::Paste(text) => {
+                for c in text.chars().filter(|c| !c.is_control()) {
+                    self.handle_char_input(c);
+                }
                 Ok(None)
             }
             UiEvent::Backspace => {
@@ -143,7 +161,7 @@ impl App {
                 self.select_security_level(level);
                 Ok(None)
             }
-            UiEvent::KeyPress(crossterm::event::KeyCode::Esc, _) => {
+            UiEvent::Escape => {
                 if self.state.show_security_selection {
                     self.state.show_security_selection = false;
                 }
@@ -170,7 +188,7 @@ impl App {
     }
 
     /// Handle network events from the network layer
-    pub fn handle_network_event(&mut self, event: NetworkEvent) {
+    pub fn handle_network_event(&mut self, event: NetworkEvent) -> Result<(), String> {
         match event {
             NetworkEvent::MessageReceived(mut message, addr) => {
                 if let Err(reason) = self.validate_incoming(&message, addr) {
@@ -178,6 +196,7 @@ impl App {
                         "Rejected unauthenticated protocol message: {}",
                         reason
                     ));
+                    return Err(reason);
                 } else {
                     // Preserve the signed envelope until validation completes. Replies
                     // use the live socket, including inbound ephemeral ports.
@@ -188,27 +207,36 @@ impl App {
             NetworkEvent::ConnectionEstablished(_addr) => {
                 // Handle connection established
             }
-            NetworkEvent::ConnectionLost(_addr) => {
-                // Handle connection lost
-                self.reset_connection_state();
-            }
-            NetworkEvent::ConnectionFailed(addr, error) => {
-                self.add_system_message(format!("Connection to {} failed: {}", addr, error));
-                if !addr.ip().is_loopback() {
-                    self.add_system_message(
-                        "If the peer is on another network: one side must have a reachable listening port, through IPv6 or router forwarding. See /myip for your shareable addresses."
-                            .to_string(),
-                    );
+            NetworkEvent::ConnectionLost(addr) => {
+                if self.state.peer_ip.as_deref() == Some(addr.to_string().as_str()) {
+                    self.reset_connection_state();
+                    self.add_system_message("Transport closed. Reconnect to start a new authenticated session.".into());
+                }
+                if self.state.incoming_connection.as_ref().is_some_and(|incoming| incoming.from_ip == addr.to_string()) {
+                    self.state.incoming_connection = None;
+                    self.state.input_mode = InputMode::ConnectField;
                 }
             }
-            NetworkEvent::IncomingFailed(addr, error) => {
-                self.add_system_message(format!(
-                    "Incoming connection from {} failed: {} (their TCP packets do reach you — your port forwarding works)",
-                    addr, error
-                ));
+            NetworkEvent::ConnectionFailed(addr, error) => {
+                self.add_system_message(format!("Connection to {addr} failed: {error}"));
+                if self.state.peer_ip.as_deref() == Some(addr.to_string().as_str())
+                    && self.state.connection_status == ConnectionStatus::Establishing {
+                    if self.pending_candidates.is_empty() {
+                        self.reset_connection_state();
+                        self.add_system_message("No candidate succeeded. See --diagnose and docs/linux.md; try reversing who connects.".into());
+                    } else {
+                        self.queue_next_candidate();
+                    }
+                }
             }
-            _ => {}
+            NetworkEvent::IncomingFailed(_, _) => {
+                // Unsolicited handshakes belong in diagnostics, not the conversation.
+            }
+            NetworkEvent::ListenerStarted(port) => self.add_system_message(format!("Listening on TCP port {port}. Ctrl+Y copies your invitation; /myip shows candidates.")),
+            NetworkEvent::ListenerWarning(error) => self.add_system_message(error),
+            NetworkEvent::ListenerFailed(error) => self.add_system_message(format!("Listener failed: {error}. Choose another port or check bind permissions. Outgoing connections can still work.")),
         }
+        Ok(())
     }
 
     /// Get current UI state for rendering
@@ -237,14 +265,81 @@ impl App {
             identity_status: self.state.identity_status,
             is_localhost: self.state.is_localhost,
             local_ip: self.state.local_ip.clone(),
-            public_ip: self.state.public_ip.clone(),
             message_scroll: self.state.message_scroll,
         }
     }
 
-    /// Store the public IP once the async lookup in main resolves
-    pub fn set_public_ip(&mut self, ip: String) {
-        self.state.public_ip = Some(ip);
+    pub fn set_invitation_addresses(&mut self, addresses: Vec<std::net::SocketAddr>) {
+        self.invitation_addresses = addresses;
+    }
+
+    pub fn expected_peer_identity(&self) -> Option<String> {
+        self.expected_identity
+            .clone()
+            .or_else(|| self.state.peer_identity_key.clone())
+    }
+
+    pub fn start_connection(&mut self, input: &str) -> Result<(), String> {
+        if !matches!(
+            self.state.connection_status,
+            ConnectionStatus::Online | ConnectionStatus::PeerDisconnected
+        ) {
+            return Err("Disconnect the current peer before connecting again".into());
+        }
+        let (expected, candidates) = if input.trim().starts_with("p2p-cli:") {
+            let invitation = crate::network::invitation::Invitation::parse(input)?;
+            (Some(invitation.identity_key), invitation.candidates)
+        } else {
+            let addr = Self::parse_socket_addr(input.trim(), self.config.port)
+                .ok_or("Enter a p2p-cli invitation or a literal IP:PORT")?;
+            if addr.port() == 0 || addr.ip().is_unspecified() || addr.ip().is_multicast() {
+                return Err("The target must be a unicast address with a nonzero port".into());
+            }
+            (None, vec![addr])
+        };
+        self.reset_connection_state();
+        self.expected_identity = expected;
+        self.pending_candidates = candidates.into();
+        if self.expected_identity.is_none() {
+            self.add_system_message("Address-only connection: compare fingerprints with your peer before sending private text. An invitation pins the expected identity.".into());
+        }
+        self.queue_next_candidate();
+        Ok(())
+    }
+
+    fn queue_next_candidate(&mut self) {
+        if let Some(target) = self.pending_candidates.pop_front() {
+            self.state.peer_ip = Some(target.to_string());
+            self.state.connection_status = ConnectionStatus::Establishing;
+            self.state.last_activity = Instant::now();
+            let message = NetworkMessage::connection_request(
+                format!("127.0.0.1:{}", self.config.port),
+                self.identity_manager.get_public_key_base64(),
+                self.config.security_level,
+            );
+            self.pending_network_messages.push_back(message);
+            self.add_system_message(format!("Connecting to {target}..."));
+        }
+    }
+
+    fn our_invitation(&self) -> Result<String, String> {
+        let mut candidates = self.invitation_addresses.clone();
+        if candidates.is_empty() {
+            candidates = crate::network::addr::local_addresses()
+                .into_iter()
+                .filter(|ip| !ip.is_loopback())
+                .map(|ip| std::net::SocketAddr::new(ip, self.config.port))
+                .collect();
+            if candidates.is_empty() {
+                candidates.push(([127, 0, 0, 1], self.config.port).into());
+            }
+            candidates.truncate(16);
+        }
+        crate::network::invitation::Invitation::new(
+            self.identity_manager.get_public_key_base64(),
+            candidates,
+        )?
+        .encode()
     }
 
     /// Check if the application should quit
@@ -266,7 +361,11 @@ impl App {
         Ok(message)
     }
 
-    fn validate_incoming(&mut self, message: &NetworkMessage, source: std::net::SocketAddr) -> Result<(), String> {
+    fn validate_incoming(
+        &mut self,
+        message: &NetworkMessage,
+        source: std::net::SocketAddr,
+    ) -> Result<(), String> {
         let age = chrono::Utc::now()
             .signed_duration_since(message.timestamp)
             .num_seconds()
@@ -312,7 +411,11 @@ impl App {
         use MessageType::*;
         match message.msg_type {
             ConnectionRequest
-                if matches!(self.state.connection_status, ConnectionStatus::Connected) =>
+                if self.state.incoming_connection.is_some()
+                    || matches!(
+                        self.state.connection_status,
+                        ConnectionStatus::Connected | ConnectionStatus::Establishing
+                    ) =>
             {
                 return Err("already connected to a peer".into())
             }
@@ -345,6 +448,21 @@ impl App {
             if expected.zip(actual).is_some_and(|(a, b)| a.ip() != b.ip()) {
                 return Err("handshake response came from a different host".into());
             }
+        }
+        if matches!(message.msg_type, ConnectionAccept | ConnectionDecline)
+            && self
+                .expected_identity
+                .as_deref()
+                .is_some_and(|expected| expected != key)
+        {
+            return Err("peer identity does not match invitation".into());
+        }
+        if matches!(
+            message.msg_type,
+            TextMessage | Disconnect | Ping | PingResponse
+        ) && self.state.peer_ip.as_deref() != Some(source.to_string().as_str())
+        {
+            return Err("message came from a different session".into());
         }
         if let Some(expected) = &self.state.peer_identity_key {
             if !matches!(message.msg_type, ConnectionRequest) && expected != key {
@@ -383,7 +501,6 @@ impl App {
             InputMode::ConnectField => InputMode::MessageField,
             InputMode::MessageField => InputMode::ConnectField,
             InputMode::IncomingResponse => InputMode::IncomingResponse,
-            InputMode::SecuritySelection => InputMode::SecuritySelection,
         };
     }
 
@@ -397,6 +514,16 @@ impl App {
     }
 
     fn handle_char_input(&mut self, c: char) {
+        if c.is_control() {
+            return;
+        }
+        let limit = match self.state.input_mode {
+            InputMode::ConnectField => (self.state.connect_input.len(), 8192),
+            _ => (self.state.message_input.len(), 16 * 1024),
+        };
+        if limit.0 + c.len_utf8() > limit.1 {
+            return;
+        }
         // While the security popup is open, digits select a level and all
         // other characters are swallowed instead of landing in an input field
         if self.state.show_security_selection {
@@ -416,7 +543,6 @@ impl App {
             InputMode::ConnectField => self.state.connect_input.push(c),
             InputMode::MessageField => self.state.message_input.push(c),
             InputMode::IncomingResponse => {}
-            InputMode::SecuritySelection => {}
         }
     }
 
@@ -432,7 +558,6 @@ impl App {
                 self.state.message_input.pop();
             }
             InputMode::IncomingResponse => {}
-            InputMode::SecuritySelection => {}
         }
     }
 
@@ -444,53 +569,18 @@ impl App {
             InputMode::ConnectField => self.send_connection_request(),
             InputMode::MessageField => self.send_message(),
             InputMode::IncomingResponse => Ok(None),
-            InputMode::SecuritySelection => Ok(None),
         }
     }
 
     fn send_connection_request(
         &mut self,
     ) -> Result<Option<NetworkMessage>, Box<dyn std::error::Error>> {
-        let input = self.state.connect_input.trim();
-        let target_socket = match Self::parse_socket_addr(input, self.config.port) {
-            Some(addr) => addr,
-            None => return Ok(None),
-        };
-        let target_address = target_socket.to_string();
-
-        if target_address.parse::<std::net::SocketAddr>().is_ok() {
-            let msg = if self.config.security_level.requires_identity() {
-                // TOFU mode: Include identity information
-                let session_key = self.get_public_key_base64()?;
-                let identity_key = self.identity_manager.get_public_key_base64();
-                let fingerprint = self.identity_manager.get_fingerprint();
-                let signature = self.identity_manager.sign_string(&session_key);
-
-                NetworkMessage::connection_request_with_identity(
-                    format!("127.0.0.1:{}", self.config.port),
-                    session_key,
-                    self.config.security_level,
-                    identity_key,
-                    fingerprint,
-                    signature,
-                )
-            } else {
-                // Quick mode: No identity
-                NetworkMessage::connection_request(
-                    format!("127.0.0.1:{}", self.config.port),
-                    self.get_public_key_base64()?,
-                    self.config.security_level,
-                )
-            };
-
-            self.state.peer_ip = Some(target_address);
-            self.state.connection_status = ConnectionStatus::Establishing;
-            self.state.connect_input.clear();
-
-            Ok(Some(msg))
-        } else {
-            Ok(None)
+        let input = self.state.connect_input.clone();
+        match self.start_connection(&input) {
+            Ok(()) => self.state.connect_input.clear(),
+            Err(error) => self.add_system_message(error),
         }
+        Ok(None)
     }
 
     fn send_message(&mut self) -> Result<Option<NetworkMessage>, Box<dyn std::error::Error>> {
@@ -509,28 +599,30 @@ impl App {
                 return Ok(None);
             }
 
-            if let Some(peer_public_key) = &self.state.peer_public_key {
-                let encrypted_content = self
-                    .crypto_manager
-                    .encrypt_message(&self.state.message_input, peer_public_key)?;
+            if self.state.peer_identity_key.is_some() {
+                let content = self.state.message_input.clone();
 
                 // Store message encrypted with local storage key (unless Maximum security)
                 if !self.config.security_level.disable_persistent_history() {
                     if let Some(peer_id) = &self.state.current_peer_id {
-                        if let Ok(storage_encrypted) = self
-                            .crypto_manager
-                            .encrypt_for_storage(&self.state.message_input)
-                        {
-                            let _ =
+                        let result = self.crypto_manager.encrypt_for_storage(&content).and_then(
+                            |encrypted| {
                                 self.message_db
-                                    .store_message(peer_id, &storage_encrypted, true);
+                                    .store_message(peer_id, &encrypted, true)
+                                    .map(|_| ())
+                            },
+                        );
+                        if let Err(error) = result {
+                            self.add_system_message(format!(
+                                "Could not save outgoing message: {error}"
+                            ));
                         }
                     }
                 }
 
                 let msg = NetworkMessage::text_message(
                     format!("127.0.0.1:{}", self.config.port),
-                    encrypted_content,
+                    content,
                 );
 
                 self.add_message(self.state.message_input.clone(), MessageSource::Me);
@@ -572,6 +664,16 @@ impl App {
                     self.add_system_message("Usage: /alias <name>".to_string());
                 }
             }
+            Some("/untrust") => {
+                if let Some(fingerprint) = &self.state.peer_fingerprint {
+                    if let Err(error) = self.message_db.untrust_identity(fingerprint) {
+                        self.add_system_message(format!("Could not remove trust: {error}"));
+                    } else {
+                        self.state.identity_status = IdentityStatus::Unknown;
+                        self.add_system_message("Remembered trust removed. The current authenticated session remains open.".into());
+                    }
+                }
+            }
             Some("/trust") => {
                 self.trust_current_peer();
             }
@@ -586,6 +688,20 @@ impl App {
             }
             Some("/status") => {
                 self.show_status();
+            }
+            Some("/invite") => match self.our_invitation() {
+                Ok(invitation) => self.add_system_message(invitation),
+                Err(error) => self.add_system_message(error),
+            },
+            Some("/connect") => {
+                if parts.len() == 2 {
+                    let target = parts[1].to_string();
+                    if let Err(error) = self.start_connection(&target) {
+                        self.add_system_message(error);
+                    }
+                } else {
+                    self.add_system_message("Usage: /connect <invitation-or-IP:PORT>".into());
+                }
             }
             Some("/myip") | Some("/ip") => {
                 self.show_my_addresses();
@@ -611,16 +727,23 @@ impl App {
             "/whoami          - Show your identity info + security warning".to_string(),
         );
         self.add_system_message("/alias <name>    - Set alias for current peer".to_string());
-        self.add_system_message("/trust           - Permanently trust current peer".to_string());
-        self.add_system_message("/clear           - Clear message history".to_string());
+        self.add_system_message("/trust           - Remember current identity".to_string());
+        self.add_system_message("/untrust         - Forget current identity trust".to_string());
+        self.add_system_message(
+            "/clear           - Clear visible messages; stored history remains".to_string(),
+        );
         self.add_system_message("/disconnect, /dc - Disconnect from peer".to_string());
         self.add_system_message("/status          - Show connection status".to_string());
         self.add_system_message("/myip, /ip       - Show shareable addresses".to_string());
+        self.add_system_message("/invite          - Show your invitation".into());
+        self.add_system_message("/connect <peer>  - Connect using an invitation or address".into());
         self.add_system_message("═══ Keyboard Shortcuts ═══".to_string());
         self.add_system_message("Ctrl+C           - Quit application".to_string());
         self.add_system_message("Ctrl+D           - Disconnect from peer".to_string());
         self.add_system_message("Ctrl+S           - Open security level selection".to_string());
-        self.add_system_message("Ctrl+Y           - Copy shareable address to clipboard".to_string());
+        self.add_system_message(
+            "Ctrl+Y           - Copy shareable address to clipboard".to_string(),
+        );
         self.add_system_message("Tab              - Switch between input fields".to_string());
         self.add_system_message("PageUp/Down      - Scroll messages".to_string());
         self.add_system_message("Ctrl+Home/End    - Scroll to top/bottom".to_string());
@@ -633,7 +756,9 @@ impl App {
             "F1/0: Quick    - Signed + encrypted, session approval".to_string(),
         );
         self.add_system_message("F2/1: TOFU     - Persistent identity pinning".to_string());
-        self.add_system_message("F3/2: Secure   - Authenticated forward-secret sessions".to_string());
+        self.add_system_message(
+            "F3/2: Secure   - Authenticated forward-secret sessions".to_string(),
+        );
         self.add_system_message("F4/3: Maximum  - Memory-only history/trust".to_string());
     }
 
@@ -646,74 +771,35 @@ impl App {
             "Identity file: {}",
             self.identity_manager.get_identity_path()
         ));
-        self.add_system_message("".to_string());
-        self.add_system_message("═══ ⚠ SECURITY WARNING ⚠ ═══".to_string());
-        self.add_system_message("Your identity is stored in the .p2p_identity file.".to_string());
-        self.add_system_message("This file contains your PRIVATE KEY.".to_string());
-        self.add_system_message("".to_string());
-        self.add_system_message("🚫 NEVER share this file with ANYONE!".to_string());
-        self.add_system_message("🚫 NEVER send it to a peer who asks for it!".to_string());
-        self.add_system_message("".to_string());
-        self.add_system_message("If someone asks you to share your identity file:".to_string());
-        self.add_system_message("  → They are trying to STEAL your identity".to_string());
-        self.add_system_message("  → They could impersonate you to others".to_string());
-        self.add_system_message("  → DISCONNECT and BLOCK them immediately!".to_string());
-        self.add_system_message("".to_string());
-        self.add_system_message("Your fingerprint is SAFE to share - it's public.".to_string());
-        self.add_system_message("Your identity FILE is PRIVATE - never share it!".to_string());
+        self.add_system_message("Your identity file contains your private key. Share the invitation or fingerprint; keep the file private.".into());
     }
 
-    /// Copy the most widely reachable address (public > LAN > localhost)
-    /// to the system clipboard via OSC 52
     fn copy_shareable_address(&mut self) {
-        let port = self.config.port;
-        let (address, kind) = match (&self.state.public_ip, &self.state.local_ip) {
-            (Some(public), _) => (format!("{}:{}", public, port), "Internet"),
-            (None, Some(local)) => (format!("{}:{}", local, port), "LAN"),
-            (None, None) => (format!("127.0.0.1:{}", port), "localhost"),
-        };
-        match crate::ui::terminal::copy_to_clipboard(&address) {
-            Ok(()) => {
-                self.add_system_message(format!(
-                    "Copied {} address {} to clipboard (if your terminal supports OSC 52; otherwise select it with the mouse)",
-                    kind, address
-                ));
+        match self.our_invitation() {
+            Ok(invitation) => {
+                match crate::ui::terminal::copy_to_clipboard(&invitation) {
+                    Ok(()) => self.add_system_message("Invitation sent to clipboard. If your terminal blocks OSC 52, use /invite or p2p-cli --invite.".into()),
+                    Err(error) => self.add_system_message(format!("Clipboard failed: {error}. Use /invite.")),
+                }
             }
-            Err(e) => {
-                self.add_system_message(format!(
-                    "Clipboard copy failed ({}). Address: {}",
-                    e, address
-                ));
-            }
+            Err(error) => self.add_system_message(error),
         }
     }
 
-    fn show_my_addresses(&mut self) {
-        let port = self.config.port;
-        self.add_system_message("═══ Your Addresses ═══".to_string());
-        self.add_system_message(format!("Localhost: 127.0.0.1:{}", port));
-        if let Some(local) = &self.state.local_ip {
-            self.add_system_message(format!("LAN:       {}:{} (same network)", local, port));
+    pub fn show_my_addresses(&mut self) {
+        let (addresses, notes) = crate::network::addr::local_addresses_with_diagnostics();
+        for address in addresses {
+            self.add_system_message(format!(
+                "Local candidate: {}",
+                std::net::SocketAddr::new(address, self.config.port)
+            ));
         }
-        match &self.state.public_ip {
-            Some(public) => {
-                self.add_system_message(format!("Internet:  {}:{}", public, port));
-                self.add_system_message(format!(
-                    "Share the Internet address over another messenger, then chat here. \
-                     Both sides must forward/open TCP port {} on their router/firewall.",
-                    port
-                ));
-            }
-            None => {
-                self.add_system_message(
-                    "Internet:  public IP lookup unavailable (offline or lookup failed)"
-                        .to_string(),
-                );
-            }
+        for note in notes {
+            self.add_system_message(note);
         }
-        self.add_system_message(
-            "IP addresses are network metadata, not secrets - safe to share with people you want to chat with.".to_string(),
-        );
+        for address in self.invitation_addresses.clone() {
+            self.add_system_message(format!("Advertised candidate: {address}"));
+        }
     }
 
     fn show_fingerprint(&mut self) {
@@ -736,6 +822,10 @@ impl App {
     }
 
     fn set_peer_alias(&mut self, alias: &str) {
+        if alias.chars().count() > 64 {
+            self.add_system_message("Alias must be at most 64 characters".into());
+            return;
+        }
         if let Some(fingerprint) = &self.state.peer_fingerprint {
             if let Err(e) = self.message_db.set_identity_alias(fingerprint, alias) {
                 self.add_system_message(format!("Failed to set alias: {}", e));
@@ -761,7 +851,15 @@ impl App {
                 self.add_system_message(format!("Failed to trust peer: {}", e));
             } else {
                 self.state.identity_status = IdentityStatus::Verified;
-                self.add_system_message(format!("Peer {} is now permanently trusted", fingerprint));
+                self.add_system_message(format!(
+                    "Peer {} is trusted{}",
+                    fingerprint,
+                    if self.persistent_history {
+                        " persistently"
+                    } else {
+                        " for this run"
+                    }
+                ));
             }
         } else {
             self.add_system_message("Cannot trust: peer has no identity".to_string());
@@ -793,34 +891,20 @@ impl App {
                 .security_level
                 .negotiate_with(incoming.security_level);
 
-            let msg = if negotiated_level.requires_identity() {
-                // TOFU mode: Include identity information
-                let session_key = self.get_public_key_base64()?;
-                let identity_key = self.identity_manager.get_public_key_base64();
-                let fingerprint = self.identity_manager.get_fingerprint();
-                let signature = self.identity_manager.sign_string(&session_key);
-
-                NetworkMessage::connection_accept_with_identity(
-                    format!("127.0.0.1:{}", self.config.port),
-                    session_key,
-                    self.config.security_level,
-                    identity_key,
-                    fingerprint,
-                    signature,
-                )
-            } else {
-                NetworkMessage::connection_accept(
-                    format!("127.0.0.1:{}", self.config.port),
-                    self.get_public_key_base64()?,
-                    self.config.security_level,
-                )
-            };
+            let msg = NetworkMessage::connection_accept(
+                format!("127.0.0.1:{}", self.config.port),
+                self.identity_manager.get_public_key_base64(),
+                self.config.security_level,
+            );
 
             // Store/update peer in database
-            if let Ok(peer_id) = self
-                .message_db
-                .get_or_create_peer(incoming.identity_key.as_deref().ok_or("missing authenticated peer identity")?, &incoming.from_ip)
-            {
+            if let Ok(peer_id) = self.message_db.get_or_create_peer(
+                incoming
+                    .identity_key
+                    .as_deref()
+                    .ok_or("missing authenticated peer identity")?,
+                &incoming.from_ip,
+            ) {
                 self.state.current_peer_id = Some(peer_id.clone());
             }
 
@@ -883,7 +967,8 @@ impl App {
     }
 
     fn decline_connection(&mut self) -> Result<Option<NetworkMessage>, Box<dyn std::error::Error>> {
-        if self.state.incoming_connection.is_some() {
+        if let Some(incoming) = &self.state.incoming_connection {
+            self.state.previous_peer_ip = Some(incoming.from_ip.clone());
             let msg = NetworkMessage::connection_decline(format!("127.0.0.1:{}", self.config.port));
 
             self.state.incoming_connection = None;
@@ -997,12 +1082,18 @@ impl App {
         // Check if we have this identity in our trust database
         match self.message_db.verify_identity(fingerprint, identity_key) {
             Ok((matches, Some(trusted))) => {
-                if matches {
+                if matches
+                    && matches!(
+                        trusted.trust_level,
+                        TrustLevel::Trusted | TrustLevel::Verified
+                    )
+                {
                     // Known and verified
                     self.state.peer_alias = trusted.alias.clone();
                     (IdentityStatus::Verified, is_localhost)
+                } else if matches {
+                    (IdentityStatus::Unknown, is_localhost)
                 } else {
-                    // KEY MISMATCH - potential impersonation!
                     (IdentityStatus::Mismatch, is_localhost)
                 }
             }
@@ -1060,7 +1151,7 @@ impl App {
                         from_ip: msg.from_ip,
                         public_key,
                         security_level: peer_security_level,
-                        expires_at: Instant::now() + std::time::Duration::from_secs(180),
+                        expires_at: Instant::now() + std::time::Duration::from_secs(90),
                         identity_key: msg.identity_key,
                         identity_fingerprint: msg.identity_fingerprint,
                         identity_status,
@@ -1078,10 +1169,10 @@ impl App {
                         .security_level
                         .negotiate_with(peer_security_level);
 
-                    if let Ok(peer_id) = self
-                        .message_db
-                        .get_or_create_peer(msg.identity_key.as_deref().expect("validated identity"), &msg.from_ip)
-                    {
+                    if let Ok(peer_id) = self.message_db.get_or_create_peer(
+                        msg.identity_key.as_deref().expect("validated identity"),
+                        &msg.from_ip,
+                    ) {
                         self.state.current_peer_id = Some(peer_id.clone());
                     }
 
@@ -1113,6 +1204,14 @@ impl App {
                     self.state.peer_security_level = Some(peer_security_level);
                     self.state.negotiated_security_level = Some(negotiated_level);
                     self.state.connection_status = ConnectionStatus::Connected;
+                    self.state.input_mode = InputMode::MessageField;
+                    self.pending_candidates.clear();
+                    if self.expected_identity.is_some() {
+                        self.state.identity_status = IdentityStatus::Verified;
+                        if self.config.security_level != SecurityLevel::Quick {
+                            self.trust_current_peer();
+                        }
+                    }
                     self.state.connected_at = Some(Instant::now());
                     self.state.last_activity = Instant::now();
 
@@ -1149,30 +1248,25 @@ impl App {
                 self.state.last_ping_sent = None;
             }
             MessageType::TextMessage => {
-                match self.crypto_manager.decrypt_message(&msg.content) {
-                    Ok(decrypted_content) => {
-                        // Don't store if Maximum security
-                        if !self.config.security_level.disable_persistent_history() {
-                            if let Some(peer_id) = &self.state.current_peer_id {
-                                if let Ok(storage_encrypted) =
-                                    self.crypto_manager.encrypt_for_storage(&decrypted_content)
-                                {
-                                    let _ = self.message_db.store_message(
-                                        peer_id,
-                                        &storage_encrypted,
-                                        false,
-                                    );
-                                }
-                            }
+                if self.persistent_history {
+                    if let Some(peer_id) = &self.state.current_peer_id {
+                        let result = self
+                            .crypto_manager
+                            .encrypt_for_storage(&msg.content)
+                            .and_then(|encrypted| {
+                                self.message_db
+                                    .store_message(peer_id, &encrypted, false)
+                                    .map(|_| ())
+                            });
+                        if let Err(error) = result {
+                            self.add_system_message(format!(
+                                "Could not save received message: {error}"
+                            ));
                         }
-
-                        self.add_message(decrypted_content, MessageSource::Peer);
-                        self.state.last_activity = Instant::now();
-                    }
-                    Err(e) => {
-                        self.add_system_message(format!("[Decryption error: {}]", e));
                     }
                 }
+                self.add_message(msg.content, MessageSource::Peer);
+                self.state.last_activity = Instant::now();
             }
             MessageType::Ping => {
                 self.state.last_activity = Instant::now();
@@ -1194,11 +1288,8 @@ impl App {
         }
     }
 
-    fn get_public_key_base64(&self) -> Result<String, Box<dyn std::error::Error>> {
-        self.crypto_manager.get_public_key_base64()
-    }
-
     fn add_message(&mut self, content: String, source: MessageSource) {
+        let content = terminal_text(&content);
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.state.messages.push_back(ChatMessage {
             content,
@@ -1234,7 +1325,7 @@ impl App {
             {
                 Ok(decrypted_content) => {
                     self.state.messages.push_back(ChatMessage {
-                        content: decrypted_content,
+                        content: terminal_text(&decrypted_content),
                         source: if stored_msg.is_outgoing {
                             MessageSource::Me
                         } else {
@@ -1339,6 +1430,14 @@ impl App {
         self.state.connection_status = ConnectionStatus::Online;
         self.state.peer_ip = None;
         self.state.peer_public_key = None;
+        self.state.peer_identity_key = None;
+        self.state.peer_fingerprint = None;
+        self.state.peer_alias = None;
+        self.state.identity_status = IdentityStatus::None;
+        self.state.incoming_connection = None;
+        self.expected_identity = None;
+        self.pending_candidates.clear();
+        self.pending_network_messages.clear();
         self.state.peer_security_level = None;
         self.state.negotiated_security_level = None;
         self.state.current_peer_id = None;
@@ -1347,7 +1446,7 @@ impl App {
         self.state.last_ping_sent = None;
         self.state.pending_ping = None;
         self.state.input_mode = InputMode::ConnectField;
-        self.state.messages.clear();
+        // Keep diagnostics and the visible transcript after a transport failure.
     }
 }
 
@@ -1370,17 +1469,28 @@ mod tests {
             seen_message_order: VecDeque::new(),
             persistent_history: false,
             pending_network_messages: VecDeque::new(),
+            pending_candidates: VecDeque::new(),
+            expected_identity: None,
+            invitation_addresses: Vec::new(),
         };
         let mut message = NetworkMessage::connection_request(
-            "127.0.0.1:8080".into(), "session".into(), SecurityLevel::Tofu,
+            "127.0.0.1:8080".into(),
+            "session".into(),
+            SecurityLevel::Tofu,
         );
         message.identity_key = Some(identity.get_public_key_base64());
         message.identity_fingerprint = Some(identity.get_fingerprint());
         message.identity_signature = Some(identity.sign(&message.signing_bytes().unwrap()));
         let observed = "192.0.2.1:49152".parse().unwrap();
-        app.handle_network_event(NetworkEvent::MessageReceived(message.clone(), observed));
-        assert_eq!(app.state.incoming_connection.as_ref().unwrap().from_ip, observed.to_string());
-        assert!(app.validate_incoming(&message, observed).unwrap_err().contains("replayed"));
+        let _ = app.handle_network_event(NetworkEvent::MessageReceived(message.clone(), observed));
+        assert_eq!(
+            app.state.incoming_connection.as_ref().unwrap().from_ip,
+            observed.to_string()
+        );
+        assert!(app
+            .validate_incoming(&message, observed)
+            .unwrap_err()
+            .contains("replayed"));
     }
 
     #[test]
@@ -1415,4 +1525,18 @@ mod tests {
         assert!(App::is_localhost_ip("[::1]:8080"));
         assert!(App::is_localhost_ip("localhost"));
     }
+}
+
+#[cfg(test)]
+mod security_tests;
+
+/// Peer content must never reach the terminal as control sequences.
+fn terminal_text(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| {
+            (!c.is_control() || *c == '\n')
+                && !matches!(*c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+        .collect()
 }

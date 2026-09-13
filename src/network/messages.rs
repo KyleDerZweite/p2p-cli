@@ -16,7 +16,7 @@ pub struct NetworkMessage {
     pub identity_key: Option<String>,
     /// Fingerprint of the identity key
     pub identity_fingerprint: Option<String>,
-    /// Signature of the session public key (proves identity owns the session key)
+    /// Signature of the complete application envelope, excluding this field
     pub identity_signature: Option<String>,
 }
 
@@ -61,31 +61,6 @@ impl NetworkMessage {
         }
     }
 
-    /// Create a new network message with identity information (for TOFU)
-    pub fn new_with_identity(
-        msg_type: MessageType,
-        from_ip: String,
-        content: String,
-        public_key: Option<String>,
-        security_level: Option<SecurityLevel>,
-        identity_key: Option<String>,
-        identity_fingerprint: Option<String>,
-        identity_signature: Option<String>,
-    ) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            msg_type,
-            from_ip,
-            content,
-            public_key,
-            security_level,
-            timestamp: chrono::Utc::now(),
-            identity_key,
-            identity_fingerprint,
-            identity_signature,
-        }
-    }
-
     /// Create a connection request message
     pub fn connection_request(
         from_ip: String,
@@ -101,27 +76,6 @@ impl NetworkMessage {
         )
     }
 
-    /// Create a connection request with identity (for TOFU mode)
-    pub fn connection_request_with_identity(
-        from_ip: String,
-        public_key: String,
-        security_level: SecurityLevel,
-        identity_key: String,
-        identity_fingerprint: String,
-        identity_signature: String,
-    ) -> Self {
-        Self::new_with_identity(
-            MessageType::ConnectionRequest,
-            from_ip,
-            "Connection request".to_string(),
-            Some(public_key),
-            Some(security_level),
-            Some(identity_key),
-            Some(identity_fingerprint),
-            Some(identity_signature),
-        )
-    }
-
     /// Create a connection accept message
     pub fn connection_accept(
         from_ip: String,
@@ -134,27 +88,6 @@ impl NetworkMessage {
             "Connection accepted".to_string(),
             Some(public_key),
             Some(security_level),
-        )
-    }
-
-    /// Create a connection accept with identity (for TOFU mode)
-    pub fn connection_accept_with_identity(
-        from_ip: String,
-        public_key: String,
-        security_level: SecurityLevel,
-        identity_key: String,
-        identity_fingerprint: String,
-        identity_signature: String,
-    ) -> Self {
-        Self::new_with_identity(
-            MessageType::ConnectionAccept,
-            from_ip,
-            "Connection accepted".to_string(),
-            Some(public_key),
-            Some(security_level),
-            Some(identity_key),
-            Some(identity_fingerprint),
-            Some(identity_signature),
         )
     }
 
@@ -206,11 +139,6 @@ impl NetworkMessage {
     /// Serialize the message to JSON
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
-    }
-
-    /// Deserialize a message from JSON
-    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
     }
 
     /// Stable bytes signed by the long-term identity. The signature field is

@@ -4,8 +4,6 @@ use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct StoredMessage {
-    pub id: i64,
-    pub peer_id: String,
     pub content: String,
     pub is_outgoing: bool,
     pub timestamp: String,
@@ -39,11 +37,8 @@ impl From<i32> for TrustLevel {
 #[derive(Debug, Clone)]
 pub struct TrustedIdentity {
     pub identity_key: String,
-    pub fingerprint: String,
     pub alias: Option<String>,
     pub trust_level: TrustLevel,
-    pub first_seen: String,
-    pub last_seen: String,
 }
 
 pub struct MessageDB {
@@ -70,7 +65,7 @@ impl MessageDB {
         }
         let db = Self { conn };
         db.conn.execute_batch(
-            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=MEMORY; PRAGMA secure_delete=ON;",
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON;",
         )?;
         db.create_tables()?;
         Ok(db)
@@ -79,6 +74,7 @@ impl MessageDB {
     pub fn new_in_memory() -> Result<Self, Box<dyn std::error::Error>> {
         let conn = Connection::open_in_memory()?;
         let db = Self { conn };
+        db.conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         db.create_tables()?;
         Ok(db)
     }
@@ -151,11 +147,8 @@ impl MessageDB {
         let result = stmt.query_row(params![fingerprint], |row| {
             Ok(TrustedIdentity {
                 identity_key: row.get(0)?,
-                fingerprint: row.get(1)?,
                 alias: row.get(2)?,
                 trust_level: TrustLevel::from(row.get::<_, i32>(3)?),
-                first_seen: row.get(4)?,
-                last_seen: row.get(5)?,
             })
         });
 
@@ -230,35 +223,6 @@ impl MessageDB {
         Ok(())
     }
 
-    /// Get all trusted identities
-    pub fn get_all_trusted_identities(
-        &self,
-    ) -> Result<Vec<TrustedIdentity>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT identity_key, fingerprint, alias, trust_level, first_seen, last_seen 
-             FROM trusted_identities 
-             ORDER BY last_seen DESC",
-        )?;
-
-        let identity_iter = stmt.query_map([], |row| {
-            Ok(TrustedIdentity {
-                identity_key: row.get(0)?,
-                fingerprint: row.get(1)?,
-                alias: row.get(2)?,
-                trust_level: TrustLevel::from(row.get::<_, i32>(3)?),
-                first_seen: row.get(4)?,
-                last_seen: row.get(5)?,
-            })
-        })?;
-
-        let mut identities = Vec::new();
-        for identity in identity_iter {
-            identities.push(identity?);
-        }
-
-        Ok(identities)
-    }
-
     // ==================== Original Methods ====================
 
     pub fn generate_peer_id(public_key: &str) -> String {
@@ -325,8 +289,6 @@ impl MessageDB {
 
         let message_iter = stmt.query_map(params![peer_id], |row| {
             Ok(StoredMessage {
-                id: row.get(0)?,
-                peer_id: row.get(1)?,
                 content: row.get(2)?,
                 is_outgoing: row.get(3)?,
                 timestamp: row.get(4)?,
@@ -340,101 +302,6 @@ impl MessageDB {
 
         Ok(messages)
     }
-
-    pub fn get_peer_by_id(
-        &self,
-        peer_id: &str,
-    ) -> Result<Option<PeerInfo>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT peer_id, public_key, alias, last_ip, created_at, last_seen 
-             FROM peers 
-             WHERE peer_id = ?1",
-        )?;
-
-        let result = stmt.query_row(params![peer_id], |row| {
-            Ok(PeerInfo {
-                peer_id: row.get(0)?,
-                public_key: row.get(1)?,
-                alias: row.get(2)?,
-                last_ip: row.get(3)?,
-                created_at: row.get(4)?,
-                last_seen: row.get(5)?,
-            })
-        });
-
-        match result {
-            Ok(peer) => Ok(Some(peer)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    pub fn set_peer_alias(
-        &self,
-        peer_id: &str,
-        alias: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        self.conn.execute(
-            "UPDATE peers SET alias = ?1 WHERE peer_id = ?2",
-            params![alias, peer_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_all_peers(&self) -> Result<Vec<PeerInfo>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT peer_id, public_key, alias, last_ip, created_at, last_seen 
-             FROM peers 
-             ORDER BY last_seen DESC",
-        )?;
-
-        let peer_iter = stmt.query_map([], |row| {
-            Ok(PeerInfo {
-                peer_id: row.get(0)?,
-                public_key: row.get(1)?,
-                alias: row.get(2)?,
-                last_ip: row.get(3)?,
-                created_at: row.get(4)?,
-                last_seen: row.get(5)?,
-            })
-        })?;
-
-        let mut peers = Vec::new();
-        for peer in peer_iter {
-            peers.push(peer?);
-        }
-
-        Ok(peers)
-    }
-
-    pub fn delete_peer(&self, peer_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Delete messages first due to foreign key constraint
-        self.conn
-            .execute("DELETE FROM messages WHERE peer_id = ?1", params![peer_id])?;
-        self.conn
-            .execute("DELETE FROM aliases WHERE peer_id = ?1", params![peer_id])?;
-        self.conn
-            .execute("DELETE FROM peers WHERE peer_id = ?1", params![peer_id])?;
-        Ok(())
-    }
-
-    pub fn get_message_count(&self, peer_id: &str) -> Result<i64, Box<dyn std::error::Error>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT COUNT(*) FROM messages WHERE peer_id = ?1")?;
-        let count: i64 = stmt.query_row(params![peer_id], |row| row.get(0))?;
-        Ok(count)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PeerInfo {
-    pub peer_id: String,
-    pub public_key: String,
-    pub alias: Option<String>,
-    pub last_ip: Option<String>,
-    pub created_at: String,
-    pub last_seen: String,
 }
 
 #[cfg(test)]
@@ -476,12 +343,11 @@ mod tests {
     fn test_alias_operations() -> Result<(), Box<dyn std::error::Error>> {
         let db = MessageDB::new_in_memory()?;
 
-        let peer_id = db.get_or_create_peer("test_public_key", "127.0.0.1")?;
-        db.set_peer_alias(&peer_id, "Alice")?;
-
-        let peer_info = db.get_peer_by_id(&peer_id)?;
-        assert!(peer_info.is_some());
-        assert_eq!(peer_info.unwrap().alias, Some("Alice".to_string()));
+        db.trust_identity("fingerprint", "public_key", TrustLevel::Trusted, None)?;
+        db.set_identity_alias("fingerprint", "Alice")?;
+        let identity = db.get_trusted_identity("fingerprint")?.unwrap();
+        assert_eq!(identity.alias.as_deref(), Some("Alice"));
+        assert_eq!(identity.identity_key, "public_key");
 
         Ok(())
     }

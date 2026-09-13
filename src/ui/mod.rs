@@ -1,4 +1,3 @@
-use crossterm::event::{KeyCode, KeyModifiers};
 use std::time::Instant;
 
 pub mod input;
@@ -14,7 +13,7 @@ pub use terminal::TerminalManager;
 /// Events that the UI can generate
 #[derive(Debug, Clone)]
 pub enum UiEvent {
-    KeyPress(KeyCode, KeyModifiers),
+    Escape,
     Tab,
     Enter,
     Backspace,
@@ -28,7 +27,7 @@ pub enum UiEvent {
     CopyAddress,
     CharInput(char),
     Paste(String),
-    Resize(u16, u16),
+    Resize,
     SecurityLevelSelect(SecurityLevel),
     ShowSecuritySelection,
     /// Scroll messages up
@@ -91,8 +90,6 @@ pub struct UiState {
     pub is_localhost: bool,
     /// Our LAN IP address, if detectable
     pub local_ip: Option<String>,
-    /// Our public IP address, if the lookup succeeded
-    pub public_ip: Option<String>,
     /// Current scroll position in messages (0 = bottom/latest)
     pub message_scroll: usize,
 }
@@ -103,7 +100,6 @@ pub enum InputMode {
     ConnectField,
     MessageField,
     IncomingResponse,
-    SecuritySelection,
 }
 
 /// Connection status for UI display
@@ -114,7 +110,6 @@ pub enum ConnectionStatus {
     Connected,
     /// Peer has disconnected, but we still have the session data (messages visible)
     PeerDisconnected,
-    Disconnected,
 }
 
 // Re-export SecurityLevel from app module
@@ -176,11 +171,6 @@ impl UiManager {
         })
     }
 
-    /// Get the next UI event (blocks until event available)
-    pub fn next_event(&mut self) -> Result<Option<UiEvent>, Box<dyn std::error::Error>> {
-        self.input_handler.next_event()
-    }
-
     /// Poll for UI events with timeout (non-blocking)
     pub fn poll_event(
         &mut self,
@@ -200,10 +190,5 @@ impl UiManager {
     /// Clean up terminal on exit
     pub fn cleanup(self) -> Result<(), Box<dyn std::error::Error>> {
         self.terminal_manager.cleanup()
-    }
-
-    /// Get terminal size
-    pub fn size(&self) -> Result<(u16, u16), Box<dyn std::error::Error>> {
-        self.terminal_manager.size()
     }
 }

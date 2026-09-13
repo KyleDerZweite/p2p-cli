@@ -11,15 +11,6 @@ impl InputHandler {
         Self
     }
 
-    /// Get the next input event (blocking)
-    pub fn next_event(&mut self) -> Result<Option<UiEvent>, Box<dyn std::error::Error>> {
-        loop {
-            if let Some(event) = self.convert_event(event::read()?) {
-                return Ok(Some(event));
-            }
-        }
-    }
-
     /// Poll for one input event with timeout.
     pub fn poll_event(
         &mut self,
@@ -37,7 +28,7 @@ impl InputHandler {
                 self.convert_key_event(key.code, key.modifiers)
             }
             Event::Paste(text) => Some(UiEvent::Paste(text)),
-            Event::Resize(width, height) => Some(UiEvent::Resize(width, height)),
+            Event::Resize(_, _) => Some(UiEvent::Resize),
             _ => None,
         }
     }
@@ -84,11 +75,11 @@ impl InputHandler {
             KeyCode::Up if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollUp),
             KeyCode::Down if modifiers.contains(KeyModifiers::CONTROL) => Some(UiEvent::ScrollDown),
             // Escape and other keys
-            KeyCode::Esc => Some(UiEvent::KeyPress(key_code, modifiers)),
+            KeyCode::Esc => Some(UiEvent::Escape),
             // Regular character input
             KeyCode::Char(c) => Some(UiEvent::CharInput(c)),
             // Pass through other key presses
-            _ => Some(UiEvent::KeyPress(key_code, modifiers)),
+            _ => None,
         }
     }
 }

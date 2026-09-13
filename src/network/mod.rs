@@ -92,6 +92,7 @@ impl NetworkManager {
     }
 
     /// Get the next network event (blocking)
+    #[cfg(test)]
     pub async fn next_event(&mut self) -> Option<NetworkEvent> {
         self.event_receiver.recv().await
     }
@@ -112,6 +113,8 @@ impl NetworkManager {
 
     /// Shutdown the network manager
     pub async fn shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
+        // Stop local event backpressure before joining the network actor.
+        drop(self.event_receiver);
         self.command_sender
             .send(NetworkCommand::StopListener)
             .await

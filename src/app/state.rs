@@ -35,7 +35,6 @@ pub struct AppState {
 
     // Application control
     pub should_quit: bool,
-    pub port: u16,
     pub show_security_selection: bool,
 
     // Identity (TOFU)
@@ -55,8 +54,6 @@ pub struct AppState {
     // Own addresses (for sharing with peers out-of-band)
     /// Our LAN IP address, if detectable
     pub local_ip: Option<String>,
-    /// Our public IP address, if the lookup succeeded
-    pub public_ip: Option<String>,
 
     // Scrolling
     /// Current scroll offset in messages (0 = showing latest)
@@ -65,7 +62,7 @@ pub struct AppState {
 
 impl AppState {
     /// Create new application state
-    pub fn new(port: u16, _security_level: super::SecurityLevel) -> Self {
+    pub fn new(_port: u16, _security_level: super::SecurityLevel) -> Self {
         let now = Instant::now();
 
         Self {
@@ -86,7 +83,6 @@ impl AppState {
             messages: VecDeque::new(),
             incoming_connection: None,
             should_quit: false,
-            port,
             show_security_selection: false,
             // Identity
             our_fingerprint: None,
@@ -96,44 +92,9 @@ impl AppState {
             identity_status: IdentityStatus::None,
             is_localhost: false,
             local_ip: None,
-            public_ip: None,
             // Scrolling
             message_scroll: 0,
         }
-    }
-
-    /// Reset connection-related state
-    pub fn reset_connection(&mut self) {
-        self.connection_status = ConnectionStatus::Online;
-        self.peer_ip = None;
-        self.peer_public_key = None;
-        self.peer_security_level = None;
-        self.negotiated_security_level = None;
-        self.current_peer_id = None;
-        self.connected_at = None;
-        self.last_activity = Instant::now();
-        self.last_ping_sent = None;
-        self.pending_ping = None;
-        self.input_mode = InputMode::ConnectField;
-        self.messages.clear();
-        // Reset identity
-        self.peer_identity_key = None;
-        self.peer_fingerprint = None;
-        self.peer_alias = None;
-        self.identity_status = IdentityStatus::None;
-        self.is_localhost = false;
-        // Reset scroll
-        self.message_scroll = 0;
-    }
-
-    /// Check if currently connected to a peer
-    pub fn is_connected(&self) -> bool {
-        matches!(self.connection_status, ConnectionStatus::Connected)
-    }
-
-    /// Check if there's an incoming connection waiting for response
-    pub fn has_incoming_connection(&self) -> bool {
-        self.incoming_connection.is_some()
     }
 
     /// Scroll messages up (towards older messages)

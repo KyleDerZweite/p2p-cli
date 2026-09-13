@@ -203,7 +203,10 @@ impl Renderer {
 
         // Show incoming connection if there is one
         if let Some(incoming) = &state.incoming_connection {
-            let remaining = (incoming.expires_at - Instant::now()).as_secs();
+            let remaining = incoming
+                .expires_at
+                .saturating_duration_since(Instant::now())
+                .as_secs();
             if !text_lines.is_empty() {
                 text_lines.push("".to_string()); // Empty line separator
             }
@@ -290,12 +293,10 @@ impl Renderer {
         // Default state: show shareable addresses so a peer can reach us
         if title.is_empty() {
             title = "Not connected - share an address below so a peer can reach you".to_string();
-            if let Some(public) = &state.public_ip {
-                text_lines.push(format!(
-                    "Internet: {}:{} (share via another messenger; both sides need port {} open/forwarded)",
-                    public, state.port, state.port
-                ));
-            }
+            text_lines.push(
+                "Ctrl+Y copies an identity invitation. One peer needs a reachable listening port."
+                    .into(),
+            );
             if let Some(local) = &state.local_ip {
                 text_lines.push(format!("LAN: {}:{} (same network)", local, state.port));
             }
@@ -419,7 +420,6 @@ impl Renderer {
             ConnectionStatus::PeerDisconnected => {
                 ("Peer Disconnected - Press Ctrl+D to close", Color::Magenta)
             }
-            ConnectionStatus::Disconnected => ("Disconnected", Color::Red),
         };
 
         let message_style = if state.input_mode == InputMode::MessageField {
@@ -506,7 +506,7 @@ impl Renderer {
                 Span::styled("F3/2: ", Style::default().fg(Color::Green)),
                 Span::styled("Secure Mode", Style::default().fg(Color::White)),
                 Span::styled(
-                    " - Fresh Noise channel/message",
+                    " - Authenticated Noise session",
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),

@@ -49,10 +49,10 @@ impl ConnectionManager {
                 command=self.command_receiver.recv()=>match command {
                     Some(NetworkCommand::StartListener(port))=>self.start_listener(port,accepted.clone()).await,
                     Some(NetworkCommand::SendMessage(message,target,expected))=>self.send_message(message,target,expected).await,
-                    Some(NetworkCommand::Disconnect(addr))=>{if let Some(s)=self.sessions.remove(&addr){s.task.abort();}},
+                    Some(NetworkCommand::Disconnect(addr))=>{if let Some(s)=self.sessions.remove(&addr){s.task.abort(); let _ = self.event_sender.send(NetworkEvent::ConnectionLost(addr)).await;}},
                     Some(NetworkCommand::StopListener)|None=>break,
                 },
-                Some((stream,addr))=incoming.recv()=>{self.spawn_session(stream,addr,false,None).await;}
+                Some((stream,addr))=incoming.recv()=>{self.spawn_session(stream,addr).await;}
             }
             self.sessions.retain(|_, s| !s.task.is_finished());
         }
@@ -239,7 +239,6 @@ impl ConnectionManager {
                 conversation(
                     stream,
                     target,
-                    true,
                     identity,
                     receiver,
                     events.clone(),
@@ -258,13 +257,7 @@ impl ConnectionManager {
         });
         self.sessions.insert(target, Session { sender, task });
     }
-    async fn spawn_session(
-        &mut self,
-        stream: TcpStream,
-        addr: SocketAddr,
-        initiator: bool,
-        first: Option<NetworkMessage>,
-    ) {
+    async fn spawn_session(&mut self, stream: TcpStream, addr: SocketAddr) {
         let permit = match self.permits.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
@@ -283,17 +276,8 @@ impl ConnectionManager {
         let identity = self.identity.clone();
         let task = tokio::spawn(async move {
             let _permit = permit;
-            if let Err(e) = conversation(
-                stream,
-                addr,
-                initiator,
-                identity,
-                receiver,
-                events.clone(),
-                first,
-                None,
-            )
-            .await
+            if let Err(e) =
+                conversation(stream, addr, identity, receiver, events.clone(), None, None).await
             {
                 let _ = events
                     .send(NetworkEvent::IncomingFailed(addr, e.to_string()))
@@ -328,13 +312,14 @@ fn bind_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
 async fn conversation(
     mut stream: TcpStream,
     addr: SocketAddr,
-    initiator: bool,
     identity: Arc<IdentityManager>,
     mut outgoing: mpsc::Receiver<NetworkMessage>,
     events: mpsc::Sender<NetworkEvent>,
     first: Option<NetworkMessage>,
     expected: Option<String>,
 ) -> Result<(), Error> {
+    // Only the dialer supplies the first connection request.
+    let initiator = first.is_some();
     stream.set_nodelay(true)?;
     let (transport, peer_key) = timeout(
         IO_TIMEOUT,
@@ -534,17 +519,40 @@ mod conversation_tests {
     }
     #[tokio::test]
     async fn conversation_replies_without_dialer_listener_and_preserves_order() {
+        conversation_over(std::net::Ipv4Addr::LOCALHOST.into()).await;
+    }
+
+    #[tokio::test]
+    async fn native_ipv6_bidirectional_conversation() {
+        match TcpListener::bind("[::1]:0").await {
+            Ok(listener) => drop(listener),
+            Err(error) => {
+                eprintln!("IPv6 unavailable on this host: {error}");
+                return;
+            }
+        }
+        conversation_over(std::net::Ipv6Addr::LOCALHOST.into()).await;
+    }
+
+    async fn listening_port(net: &mut NetworkManager) -> u16 {
+        loop {
+            match event(net).await {
+                NetworkEvent::ListenerStarted(port) => return port,
+                NetworkEvent::ListenerWarning(_) => {}
+                event => panic!("{event:?}"),
+            }
+        }
+    }
+
+    async fn conversation_over(ip: std::net::IpAddr) {
         let dir = tempfile::tempdir().unwrap();
         let alice = Arc::new(IdentityManager::new(dir.path().join("alice")).unwrap());
         let bob = Arc::new(IdentityManager::new(dir.path().join("bob")).unwrap());
         let mut a = NetworkManager::new(0, alice.clone()).await.unwrap();
         let mut b = NetworkManager::new(0, bob.clone()).await.unwrap();
         b.start_listener(0).await.unwrap();
-        let port = match event(&mut b).await {
-            NetworkEvent::ListenerStarted(p) => p,
-            e => panic!("{e:?}"),
-        };
-        let target = SocketAddr::from(([127, 0, 0, 1], port));
+        let port = listening_port(&mut b).await;
+        let target = SocketAddr::new(ip, port);
         a.send_message(
             msg(MessageType::ConnectionRequest, &alice, "hello"),
             target,
@@ -601,10 +609,7 @@ mod conversation_tests {
         let a = NetworkManager::new(0, alice.clone()).await.unwrap();
         let mut b = NetworkManager::new(0, bob.clone()).await.unwrap();
         b.start_listener(0).await.unwrap();
-        let port = match event(&mut b).await {
-            NetworkEvent::ListenerStarted(p) => p,
-            e => panic!("{e:?}"),
-        };
+        let port = listening_port(&mut b).await;
         a.send_message(
             msg(MessageType::ConnectionRequest, &bob, "forged"),
             SocketAddr::from(([127, 0, 0, 1], port)),
@@ -633,10 +638,7 @@ mod conversation_tests {
         let mut a = NetworkManager::new(0, alice.clone()).await.unwrap();
         let mut b = NetworkManager::new(0, bob.clone()).await.unwrap();
         b.start_listener(0).await.unwrap();
-        let port = match event(&mut b).await {
-            NetworkEvent::ListenerStarted(p) => p,
-            e => panic!("{e:?}"),
-        };
+        let port = listening_port(&mut b).await;
         a.send_message(
             msg(MessageType::ConnectionRequest, &alice, "private"),
             SocketAddr::from(([127, 0, 0, 1], port)),
@@ -668,10 +670,7 @@ mod conversation_tests {
         let mut a = NetworkManager::new(0, alice.clone()).await.unwrap();
         let mut b = NetworkManager::new(0, bob.clone()).await.unwrap();
         b.start_listener(0).await.unwrap();
-        let port = match event(&mut b).await {
-            NetworkEvent::ListenerStarted(p) => p,
-            e => panic!("{e:?}"),
-        };
+        let port = listening_port(&mut b).await;
         let target = SocketAddr::from(([127, 0, 0, 1], port));
         a.send_message(
             msg(MessageType::ConnectionRequest, &alice, "hello"),

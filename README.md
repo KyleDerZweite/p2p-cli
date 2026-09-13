@@ -1,174 +1,89 @@
 # P2P CLI
 
-![Rust](https://github.com/KyleDerZweite/p2p-cli/workflows/CI/badge.svg)
+A Linux terminal messenger for two people who can reach each other directly. Both clients run locally. Chat requires no account, relay, public IP lookup, rendezvous server, STUN/TURN server, or hosted VPN.
 
-A terminal-based peer-to-peer messenger written in Rust. Every application message uses a fresh Noise XX channel (X25519, ChaCha20-Poly1305, BLAKE2s), is signed with a persistent Ed25519 identity, and is checked for replay and protocol-state violations. No relay server is involved; peers must be directly reachable.
+One peer must have a reachable TCP listening port. That can be a LAN address, global IPv6 with firewall permission, or a manually forwarded IPv4 port. The other peer connects once; both directions use that same encrypted connection. Some network pairs cannot connect under these constraints.
 
-> IMPORTANT: This project is under development and is not a stable, released product. It is provided "as-is", without warranty or guarantee. It works to some extent, but may be incomplete, unstable, or contain bugs. Mentions of a version such as "v2" do not imply an official release.
+## Build and chat
 
-![P2P TUI](public/p2p-tui.png)
+Install Rust, a C compiler, and iproute2 on Linux. SQLite is bundled. Build and install:
 
-![Security Selection](public/p2p-tui-security-select.png)
-
-## Features
-
-- **Authenticated Noise Transport** - Fresh forward-secret X25519 + ChaCha20-Poly1305 channel per application message
-- **Signed Protocol Transcript** - Ed25519 signatures bind message type, content, timestamp, ID, and metadata
-- **TOFU Identity Verification** - Trust on First Use with Ed25519 identity keys
-- **Four Security Levels** - From quick messaging to maximum security
-- **Persistent Encrypted History** - SQLite storage with AES-256 encryption
-- **Modern TUI** - Ratatui-based terminal interface with scrolling and contextual shortcut hints
-- **Address Sharing** - Shows your localhost/LAN `IP:PORT` so peers can reach you (`/myip`)
-- **Chat Commands** - `/help`, `/fingerprint`, `/alias`, and more
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/KyleDerZweite/p2p-cli.git
-cd p2p-cli
-
-# Build and run
-cargo build --release
-./target/release/p2p-cli --help
+```sh
+cargo install --path . --locked
 ```
 
-## Usage
+The listener generates an invitation, shares it with the other person, then starts chat using the same profile and port:
 
-```bash
-# Start with default settings (port 8080, quick mode)
-p2p-cli
-
-# Listen on a specific port
-p2p-cli -p 9000
-
-# Start with TOFU security (identity verification)
-p2p-cli -s tofu
-
-# Start with maximum security (no persistent history)
-p2p-cli -s max
-
-# Combine options
-p2p-cli -p 9000 -s secure -v
+```sh
+p2p-cli --invite -p 8080
+p2p-cli -p 8080
 ```
 
-## Connecting Across Networks
+The connecting person runs:
 
-The application design follows a direct-only model: two clients communicating directly with no accounts, servers, or relays.
+```sh
+p2p-cli --connect 'p2p-cli:v1:...'
+```
 
-- **Same machine:** connect to `127.0.0.1:<port>`.
-- **Same LAN:** connect to the other person's LAN address, such as `192.168.1.x:8080`, or find them via local mDNS discovery.
-- **Across the internet:** connect to the listener's reachable address. In the current implementation, every message opens a fresh TCP connection, requiring both sides to forward their listening port. The planned transport replaces this with a single persistent, bidirectional TCP connection per conversation, meaning only one side needs to be reachable.
-- **Reaching peers without manual port forwarding:** direct connections work across networks when one side has a reachable global IPv6 address or when the local router supports automatic port mapping via PCP or UPnP. When network firewalls prevent direct connections on both sides, direct communication is not possible without changing network settings or using a mesh VPN like Tailscale or WireGuard. The app intentionally includes no relay fallback, preserving a strict two-node architecture.
+The listener presses `a` to accept and remember the identity, `o` to accept once, or `d` to decline. Type a message and press Enter. `Ctrl+C` quits, `Ctrl+D` disconnects, and `Tab` switches fields. An invitation can also be pasted into the connection field. `Ctrl+Y` copies your invitation in terminals that permit OSC 52 clipboard access; `/invite` prints it in chat.
 
-Candidate addresses are shared out-of-band by exchanging a self-contained invitation containing the peer's expected public key and address options.
+For internet IPv4, supply the router's public address and forwarded TCP port when generating the invitation:
 
-## Security Levels
+```sh
+p2p-cli --invite --address 203.0.113.10:8080
+```
 
-| Level | Name | Description |
-|-------|------|-------------|
-| 0 | **Quick** | Encrypted and signed; approve peers for the current session |
-| 1 | **TOFU** | Quick plus persistent identity pinning and change rejection |
-| 2 | **Secure** | TOFU policy with a fresh forward-secret Noise channel for every protocol message |
-| 3 | **Maximum** | Secure transport with in-memory message/trust database and no storage key creation |
+The example IP above is a documentation address. Replace it with your own. The command does not configure the router. For IPv6 use `[address]:port`. Exchange invitations through a channel where you can verify who sent them. The invitation pins the expected public identity key; addresses alone do not.
 
-All levels have encrypted, integrity-protected transport and signed identities. Levels are policy choices, not choices between plaintext and encryption. Switching to or from Maximum requires restarting because its storage backend is selected before the TUI starts.
+See [Linux networking and troubleshooting](docs/linux.md) for CGNAT, firewalls, IPv6, and WireGuard.
 
-## Chat Commands
+## Diagnostics
 
-| Command | Description |
-|---------|-------------|
-| `/help`, `/h` | Show available commands |
-| `/myip`, `/ip` | Show your shareable addresses |
-| `/fingerprint`, `/fp` | Show identity fingerprints |
-| `/whoami` | Show your identity info |
-| `/alias <name>` | Set alias for current peer |
-| `/trust` | Permanently trust current peer |
-| `/clear` | Clear message history |
-| `/disconnect`, `/dc` | Disconnect from peer |
-| `/status` | Show connection status |
+```sh
+p2p-cli --diagnose
+p2p-cli --diagnose 192.168.1.20:8080
+p2p-cli --connect 'p2p-cli:v1:...' --log connection.log
+```
 
-## Keyboard Shortcuts
+`--diagnose` prints assigned addresses and discovery limitations. With a target, it tests TCP reachability. A successful probe does not verify the remote identity. Interactive connection failures include the phase, destination, observed error, and suggested checks. Invitation addresses are tried in order with the same expected identity.
 
-| Key | Action |
-|-----|--------|
-| `Tab` | Switch between Connect/Message fields |
-| `Enter` | Connect to peer / Send message |
-| `Ctrl+C` | Quit application |
-| `Ctrl+D` | Disconnect from peer |
-| `Ctrl+S` | Open security level selection |
-| `Ctrl+Y` | Copy your shareable address to the clipboard |
-| `F1-F4` or `0-3` | Select security level (in the selection popup) |
-| `PageUp/Down` | Scroll messages |
-| `Ctrl+Home/End` | Scroll to top/bottom |
-| `a` | Accept incoming connection |
-| `d` | Decline incoming connection |
-| `o` | Accept once (don't permanently trust) |
+`--log` creates a new owner-only file, capped near 4 MiB. It records network metadata and failures, excludes chat text and keys, and refuses existing paths. Maximum mode rejects persistent logs. Unsolicited scanner failures go to diagnostics rather than the chat display.
 
-The footer line at the bottom of the TUI always shows the shortcuts relevant to the current context.
+A timeout cannot identify which router or firewall dropped a packet. The app reports that uncertainty. Exact router policy requires the router's response or its logs.
 
-## Security Architecture
+## Security and storage
 
-### Cryptographic layers
+Every policy uses the same Noise XX transport with X25519, ChaCha20-Poly1305, and BLAKE2s. Both peers sign the completed handshake transcript with Ed25519 before sending application messages. Signatures separate the two roles and protocol version. Each conversation has a fresh transport. Application envelopes remain signed, with identity, session-state, timestamp, and replay checks.
 
-1. **Transport**: Noise XX using X25519, ChaCha20-Poly1305, and BLAKE2s. A new ephemeral handshake is performed for every application message.
-2. **Application authentication**: Every complete protocol envelope is signed by a persistent Ed25519 identity.
-3. **Replay resistance**: UUIDs are cached and timestamps must fall within a five-minute window.
-4. **Storage**: Persistent tiers encrypt message bodies with AES-256-GCM and random nonces. Maximum uses SQLite only in memory.
-5. **TOFU**: Fingerprints are computed locally from identity keys and pinned keys are rejected if they change.
+The default is `--security tofu`. Existing flags remain available:
 
-### TOFU (Trust on First Use)
+| Policy | Local behaviour |
+| --- | --- |
+| `quick` | Session approval, encrypted history; no implicit persistent trust |
+| `tofu` | Explicit approval can remember identities; invitations pin the expected key |
+| `secure` | Alias policy for TOFU, retained for existing commands |
+| `max` | Memory-only history and trust; persistent identity remains |
 
-When running in TOFU mode (`-s tofu`), the app:
-1. Generates a permanent Ed25519 identity key pair (stored in the platform-specific config directory, e.g., `~/.config/p2p-cli/p2p_identity` on Linux or `%APPDATA%\\p2p-cli\\p2p_identity` on Windows)
-2. Signs the complete application protocol envelope with the identity key
-3. Displays peer fingerprints (e.g., `A1B2-C3D4-E5F6-G7H8`)
-4. Rejects a known fingerprint whose identity key changes
+`/trust` explicitly remembers a peer, `/untrust` removes remembered trust, `/fingerprint` displays both fingerprints, `/alias name` assigns a local name, `/status` reports the connection, `/myip` lists candidates, and `/clear` clears only the visible transcript. `/help` lists shortcuts. Local policy cannot control what the other person stores.
 
-## Threat model and limitations
+Persistent history encrypts message bodies with AES-256-GCM. Linux uses XDG config/data directories, normally `~/.config/p2p-cli` and `~/.local/share/p2p-cli`. Identity and storage-key files are owner-only and created atomically. Chat and trust metadata remain in SQLite. Keep both the identity and storage key private; losing the storage key loses access to existing history. Corrupt keys cause a startup error instead of silently replacing them.
 
-The design aims to protect message content and integrity against passive network observers, active network modification, replay, and later compromise of long-term identity keys after ephemeral channel secrets have been erased. TOFU cannot identify an attacker who successfully intercepts the very first contact. Compare fingerprints through an independent channel before assigning trust.
+TOFU identifies previously accepted keys, not people. An address-only connection to a new key remains unverified; compare fingerprints before sending private text. A trusted invitation detects an unexpected endpoint key. The app cannot protect a compromised endpoint, terminal recording, IP/timing metadata, or an attacker exhausting network capacity. Local encryption does not protect history from someone who can read the storage key. Maximum mode does not erase earlier files.
 
-It does not protect an unlocked or compromised endpoint, terminal capture, malicious dependencies, traffic analysis metadata like IP addresses, timing, and packet sizes, denial of service by a network attacker, or plaintext copied outside the application. Persistent tiers keep peer and trust metadata in SQLite; only message bodies are encrypted. Maximum prevents new persistent chat and trust records, but does not erase files created by earlier runs. Secure deletion on SSDs and journaled filesystems cannot be guaranteed by an application.
+Messages appear locally when queued. There are no delivery receipts or automatic retransmission; if a connection fails during a send, delivery can be uncertain. Reconnect explicitly. The protocol intentionally rejects older per-message-connection versions. Use the same current version on both sides.
 
-### Known transport concerns under review
+## Verification and scope
 
-- **Channel binding:** Ephemeral Noise keypairs are generated per message, but the handshake hash is not yet cryptographically bound to the persistent Ed25519 identity signature. The application signature does not authenticate the specific ephemeral transport session, which is an open gap under review.
-- **Signed envelope mutation:** `App::handle_network_event` replaces `from_ip` with the observed source address before signature verification. Because `signing_bytes()` includes `from_ip`, this can break verification on WAN connections. Transport routing metadata must be separated from the signed application payload.
-- **Port scanner noise:** The TCP listener reports inbound handshake failures to the user interface. When exposed to the open internet, automated internet scanners touching the port trigger false connection alerts.
-- **External IP lookup:** The startup lookup to `api.ipify.org` currently runs over unencrypted HTTP. This call will be removed entirely, replacing external web lookups with local interface enumeration, global IPv6 detection, and router responses.
+```sh
+cargo fmt --check
+cargo test --locked
+cargo build --locked
+python3 tests/linux_smoke.py
+cargo build --release --locked
+```
 
-This project has not received an independent cryptographic audit. Concrete algorithms, state transitions, and documented limitations are more useful and testable than marketing claims.
+The Linux smoke test uses two real terminals with separate profiles to check invitations, acceptance, messages in both directions, paste, restart, and encrypted history recovery. Network tests cover a dialer with no listening socket, wrong identity pins, protocol state, framing limits, and shutdown.
 
-## Project Structure
+This release scope is pairwise text chat. Automatic router mapping, LAN broadcasts, file transfer, group chat, and automatic reconnect are deferred. [The implementation design](docs/design.md) and [completion map](.scratch/p2p-cli-finish/map.md) record the choices. The cryptographic implementation has not received an independent audit.
 
-Key crates: **tokio** (async runtime), **ratatui** (TUI), **snow** (Noise), **ed25519-dalek** (signatures), **aes-gcm** (storage encryption), **rusqlite** (history). Source lives in `src/` split into `app/` (logic & config), `crypto/`, `network/`, `ui/`, and `messagedb.rs`.
-
-## Roadmap
-
-- [x] Basic P2P messaging
-- [x] Noise XX authenticated transport
-- [x] Persistent message history
-- [x] Security level framework
-- [x] TOFU identity verification
-- [x] Chat commands
-- [x] Message scrolling
-- [x] Fresh ephemeral transport keys for each application message
-- [ ] Fix signature verification by separating transport metadata from signed envelopes
-- [ ] Bind Noise transport handshake hash to persistent Ed25519 identity signatures
-- [ ] Single persistent bidirectional TCP connection per conversation
-- [x] Remove external HTTP IP lookup API; derive addresses locally
-- [ ] Direct global IPv6 connectivity
-- [ ] Optional local router port mapping via PCP and UPnP with explicit user prompt
-- [ ] Self-contained copyable connection invitations containing public key and candidate addresses
-- [ ] Link-local LAN discovery via mDNS
-- [ ] File transfer
-- [ ] Multi-peer connections
-
-## License
-
-MIT License - see [LICENSE.md](LICENSE.md) for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+MIT license. See [LICENSE.md](LICENSE.md).

@@ -32,36 +32,6 @@ impl SecurityLevel {
         }
     }
 
-    /// Get description of security level
-    pub fn description(&self) -> &'static str {
-        match self {
-            SecurityLevel::Quick => "Encrypted + signed transport; approve peers each session",
-            SecurityLevel::Tofu => "Encrypted + signed transport with persistent identity pinning",
-            SecurityLevel::Secure => "Authenticated forward-secret sessions with persistent identity pinning",
-            SecurityLevel::Maximum => "Secure transport with memory-only history and trust state",
-        }
-    }
-
-    /// Check if this security level requires identity verification
-    pub fn requires_identity(&self) -> bool {
-        match self {
-            SecurityLevel::Quick
-            | SecurityLevel::Tofu
-            | SecurityLevel::Secure
-            | SecurityLevel::Maximum => true,
-        }
-    }
-
-    /// Check if this security level requires digital signatures
-    pub fn requires_signatures(&self) -> bool {
-        true
-    }
-
-    /// Check if this security level requires key rotation
-    pub fn requires_key_rotation(&self) -> bool {
-        true
-    }
-
     /// Check if this security level disables persistent history
     pub fn disable_persistent_history(&self) -> bool {
         match self {
@@ -117,23 +87,11 @@ impl AppConfig {
     }
 
     /// Create default configuration
+    #[cfg(test)]
     pub fn default() -> Self {
         Self {
             port: 8080,
             security_level: SecurityLevel::Quick,
         }
-    }
-
-    /// Validate the configuration
-    pub fn validate(&self) -> Result<(), String> {
-        if self.port == 0 {
-            return Err("Port cannot be 0".to_string());
-        }
-
-        if self.port < 1024 {
-            eprintln!("Warning: Using port {} requires root privileges", self.port);
-        }
-
-        Ok(())
     }
 }

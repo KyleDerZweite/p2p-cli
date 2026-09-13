@@ -7,15 +7,6 @@ pub enum P2PError {
     #[error("Cryptographic operation failed: {0}")]
     CryptoError(String),
 
-    #[error("RSA key generation failed: {0}")]
-    KeyGenerationError(String),
-
-    #[error("Encryption failed: {0}")]
-    EncryptionError(String),
-
-    #[error("Decryption failed: {0}")]
-    DecryptionError(String),
-
     #[error("Invalid public key: {0}")]
     InvalidPublicKey(String),
 
@@ -23,44 +14,20 @@ pub enum P2PError {
     SignatureError(String),
 
     // Identity errors
-    #[error("Identity not found: {0}")]
-    IdentityNotFound(String),
-
-    #[error("Identity verification failed: peer fingerprint mismatch")]
-    IdentityMismatch { expected: String, received: String },
-
-    #[error("Untrusted peer: {0}")]
-    UntrustedPeer(String),
-
     // Network errors
-    #[error("Connection failed: {0}")]
-    ConnectionError(String),
-
-    #[error("Connection timeout")]
-    ConnectionTimeout,
-
     #[error("Network error: {0}")]
     NetworkError(String),
 
     #[error("Invalid message format: {0}")]
     InvalidMessage(String),
 
-    #[error("Peer disconnected")]
-    PeerDisconnected,
-
     // Storage errors
     #[error("Database error: {0}")]
     DatabaseError(String),
 
-    #[error("Storage encryption error: {0}")]
-    StorageError(String),
-
     // Configuration errors
     #[error("Invalid configuration: {0}")]
     ConfigError(String),
-
-    #[error("Invalid security level: {0}")]
-    InvalidSecurityLevel(String),
 
     // UI errors
     #[error("Terminal error: {0}")]
@@ -75,9 +42,6 @@ pub enum P2PError {
 
     #[error("JSON serialization error: {0}")]
     JsonError(#[from] serde_json::Error),
-
-    #[error("Unknown command: {0}")]
-    UnknownCommand(String),
 }
 
 /// Result type alias for P2P operations

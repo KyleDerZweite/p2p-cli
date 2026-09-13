@@ -4,14 +4,10 @@ use aes_gcm::{
 };
 use base64::{engine::general_purpose, Engine as _};
 use directories::ProjectDirs;
-use rand_core::{OsRng, RngCore};
 use std::{env, fs, path::Path};
 
-/// Local cryptographic state. Wire confidentiality and integrity are provided
-/// by the Noise transport; this type owns only a per-process session identifier
-/// and the at-rest cipher.
+/// Encryption of local message history. Network encryption lives in the transport.
 pub struct CryptoManager {
-    session_id: [u8; 32],
     storage_cipher: Aes256Gcm,
 }
 
@@ -20,15 +16,12 @@ impl CryptoManager {
         // Never read secrets from the current working directory. Environment
         // variables set by the process owner take precedence over the private
         // application configuration file.
-        let mut session_id = [0u8; 32];
-        OsRng.fill_bytes(&mut session_id);
         let storage_key = if persistent_storage {
             Self::get_or_create_storage_key()?
         } else {
             Aes256Gcm::generate_key(&mut AesRng)
         };
         Ok(Self {
-            session_id,
             storage_cipher: Aes256Gcm::new(&storage_key),
         })
     }
@@ -43,23 +36,6 @@ impl CryptoManager {
             .ok_or("could not determine application config directory")?;
         fs::create_dir_all(dirs.config_dir())?;
         load_or_create_storage_key(&dirs.config_dir().join(".env"))
-    }
-
-    pub fn get_public_key_base64(&self) -> Result<String, Box<dyn std::error::Error>> {
-        Ok(general_purpose::STANDARD.encode(self.session_id))
-    }
-
-    /// Payloads are already protected by the authenticated Noise channel.
-    pub fn encrypt_message(
-        &self,
-        message: &str,
-        _peer_key: &str,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        Ok(message.to_owned())
-    }
-
-    pub fn decrypt_message(&self, message: &str) -> Result<String, Box<dyn std::error::Error>> {
-        Ok(message.to_owned())
     }
 
     pub fn encrypt_for_storage(

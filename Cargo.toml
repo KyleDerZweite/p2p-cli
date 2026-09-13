@@ -1,8 +1,8 @@
 [package]
 name = "p2p-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "A modern, secure, terminal-based peer-to-peer messenger with hybrid encryption"
+description = "Direct, authenticated two-party terminal messenger"
 authors = ["KyleDerZweite"]
 license = "MIT"
 repository = "https://github.com/KyleDerZweite/p2p-cli"

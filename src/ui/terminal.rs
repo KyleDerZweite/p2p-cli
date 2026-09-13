@@ -47,12 +47,6 @@ impl TerminalManager {
         Ok(())
     }
 
-    /// Get terminal size
-    pub fn size(&self) -> Result<(u16, u16), Box<dyn std::error::Error>> {
-        let size = self.terminal.size()?;
-        Ok((size.width, size.height))
-    }
-
     /// Clean up terminal and restore normal mode
     pub fn cleanup(mut self) -> Result<(), Box<dyn std::error::Error>> {
         disable_raw_mode()?;

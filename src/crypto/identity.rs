@@ -147,11 +147,6 @@ impl IdentityManager {
         general_purpose::STANDARD.encode(signature.to_bytes())
     }
 
-    /// Sign a string message
-    pub fn sign_string(&self, message: &str) -> String {
-        self.sign(message.as_bytes())
-    }
-
     /// Verify a signature from a peer
     pub fn verify_signature(
         public_key_b64: &str,
@@ -185,11 +180,6 @@ impl IdentityManager {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }
-    }
-
-    /// Get the verifying key
-    pub fn verifying_key(&self) -> &VerifyingKey {
-        &self.verifying_key
     }
 
     /// Get the identity file path (as a string) where this identity is stored

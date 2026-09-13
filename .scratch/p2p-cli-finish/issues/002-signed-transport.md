@@ -2,12 +2,8 @@
 
 Question: How should identity signatures authenticate the Noise transport session?
 
-Type: security design. Blockers: none. Status: resolved.
+Type: security design. Blockers: none. Status: resolved and implemented.
 
-Both peers exchange encrypted Ed25519 proofs immediately after Noise XX completes. Each proof signs the completed Noise transcript hash, a protocol-specific prefix, and the sender's initiator or responder role. Strict signature verification rejects proof reuse on another channel or in the opposite role. The transport checks that every application message's identity matches its authenticated peer before dispatch.
+Both peers sign the completed Noise handshake hash, protocol domain, and sender role with their persistent Ed25519 identity. Encrypted proof exchange completes before application data. The dialer compares the authenticated identity with the invitation pin before sending the connection request. Each received envelope must use that channel's identity. App verifies the immutable signed envelope before substituting the observed socket address for routing.
 
-The versioned Noise prologue intentionally rejects old unauthenticated transports. There is no fallback. First contact still requires an independently checked invitation identity or explicit user approval. Authentication proves possession of a key; it cannot identify an unknown human by itself.
-
-The application verifies the original signed envelope before replacing its advertised address with the observed socket for replies. Conversation history uses the authenticated persistent identity instead of the random process session identifier.
-
-Evidence lives in `src/network/handshake.rs` tests for channel, role and identity substitution, and a real TCP handshake authenticating both peers. The application regression test covers a signed request whose observed remote socket differs from its advertised address and replay rejection.
+Evidence: `src/network/handshake.rs` tests reject wrong channel, role, key and forwarded proofs between real Noise sessions. `src/app/security_tests.rs` rejects signature tampering, wrong session, identity changes, replay, and wrong invitation keys. This is implementation evidence, not an independent cryptographic audit.
