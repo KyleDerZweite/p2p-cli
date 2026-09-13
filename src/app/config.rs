@@ -3,7 +3,7 @@
 pub enum SecurityLevel {
     Quick = 0,   // Encrypted and signed, explicit approval each session
     Tofu = 1,    // Persistently pin peer identities
-    Secure = 2,  // Fresh forward-secret channel for every application message
+    Secure = 2,  // Authenticated forward-secret sessions, same transport as Tofu
     Maximum = 3, // Secure plus memory-only history/trust state
 }
 
@@ -37,7 +37,7 @@ impl SecurityLevel {
         match self {
             SecurityLevel::Quick => "Encrypted + signed transport; approve peers each session",
             SecurityLevel::Tofu => "Encrypted + signed transport with persistent identity pinning",
-            SecurityLevel::Secure => "TOFU plus a fresh forward-secret Noise channel per message",
+            SecurityLevel::Secure => "Authenticated forward-secret sessions with persistent identity pinning",
             SecurityLevel::Maximum => "Secure transport with memory-only history and trust state",
         }
     }

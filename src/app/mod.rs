@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 use uuid::Uuid;
 
 pub mod config;
@@ -23,7 +23,7 @@ pub struct App {
     config: AppConfig,
     state: AppState,
     crypto_manager: CryptoManager,
-    identity_manager: IdentityManager,
+    identity_manager: Arc<IdentityManager>,
     message_db: MessageDB,
     seen_message_ids: HashSet<Uuid>,
     seen_message_order: VecDeque<Uuid>,
@@ -48,7 +48,7 @@ impl App {
         let identity_path: PathBuf = config_dir.join("p2p_identity");
         let db_path: PathBuf = data_dir.join("messages.db");
 
-        let identity_manager = IdentityManager::new(identity_path)?;
+        let identity_manager = Arc::new(IdentityManager::new(identity_path)?);
         let message_db = if persistent_history {
             MessageDB::new(db_path)?
         } else {
@@ -74,6 +74,10 @@ impl App {
             persistent_history,
             pending_network_messages: VecDeque::new(),
         })
+    }
+
+    pub fn transport_identity(&self) -> Arc<IdentityManager> {
+        Arc::clone(&self.identity_manager)
     }
 
     /// Handle UI events from the terminal interface
@@ -169,20 +173,15 @@ impl App {
     pub fn handle_network_event(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::MessageReceived(mut message, addr) => {
-                // The IP address is a transport fact, never peer-controlled JSON.
-                // Only the advertised listening port is used for the return path.
-                let advertised_port = message
-                    .from_ip
-                    .parse::<std::net::SocketAddr>()
-                    .map(|a| a.port())
-                    .unwrap_or(self.config.port);
-                message.from_ip = std::net::SocketAddr::new(addr.ip(), advertised_port).to_string();
-                if let Err(reason) = self.validate_incoming(&message) {
+                if let Err(reason) = self.validate_incoming(&message, addr) {
                     self.add_system_message(format!(
                         "Rejected unauthenticated protocol message: {}",
                         reason
                     ));
                 } else {
+                    // Preserve the signed envelope until validation completes. Replies
+                    // use the live socket, including inbound ephemeral ports.
+                    message.from_ip = addr.to_string();
                     self.handle_network_message(message);
                 }
             }
@@ -197,7 +196,7 @@ impl App {
                 self.add_system_message(format!("Connection to {} failed: {}", addr, error));
                 if !addr.ip().is_loopback() {
                     self.add_system_message(
-                        "If the peer is on another network: both sides must have their listening port open/forwarded (or use a VPN like Tailscale). See /myip for your shareable addresses."
+                        "If the peer is on another network: one side must have a reachable listening port, through IPv6 or router forwarding. See /myip for your shareable addresses."
                             .to_string(),
                     );
                 }
@@ -267,7 +266,7 @@ impl App {
         Ok(message)
     }
 
-    fn validate_incoming(&mut self, message: &NetworkMessage) -> Result<(), String> {
+    fn validate_incoming(&mut self, message: &NetworkMessage, source: std::net::SocketAddr) -> Result<(), String> {
         let age = chrono::Utc::now()
             .signed_duration_since(message.timestamp)
             .num_seconds()
@@ -342,7 +341,7 @@ impl App {
                 .peer_ip
                 .as_deref()
                 .and_then(|v| v.parse::<std::net::SocketAddr>().ok());
-            let actual = message.from_ip.parse::<std::net::SocketAddr>().ok();
+            let actual = Some(source);
             if expected.zip(actual).is_some_and(|(a, b)| a.ip() != b.ip()) {
                 return Err("handshake response came from a different host".into());
             }
@@ -634,7 +633,7 @@ impl App {
             "F1/0: Quick    - Signed + encrypted, session approval".to_string(),
         );
         self.add_system_message("F2/1: TOFU     - Persistent identity pinning".to_string());
-        self.add_system_message("F3/2: Secure   - Fresh Noise channel per message".to_string());
+        self.add_system_message("F3/2: Secure   - Authenticated forward-secret sessions".to_string());
         self.add_system_message("F4/3: Maximum  - Memory-only history/trust".to_string());
     }
 
@@ -820,7 +819,7 @@ impl App {
             // Store/update peer in database
             if let Ok(peer_id) = self
                 .message_db
-                .get_or_create_peer(&incoming.public_key, &incoming.from_ip)
+                .get_or_create_peer(incoming.identity_key.as_deref().ok_or("missing authenticated peer identity")?, &incoming.from_ip)
             {
                 self.state.current_peer_id = Some(peer_id.clone());
             }
@@ -1081,7 +1080,7 @@ impl App {
 
                     if let Ok(peer_id) = self
                         .message_db
-                        .get_or_create_peer(&public_key, &msg.from_ip)
+                        .get_or_create_peer(msg.identity_key.as_deref().expect("validated identity"), &msg.from_ip)
                     {
                         self.state.current_peer_id = Some(peer_id.clone());
                     }
@@ -1355,6 +1354,34 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_request_uses_observed_address_after_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Arc::new(IdentityManager::new(dir.path().join("identity")).unwrap());
+        let config = AppConfig::default();
+        let mut app = App {
+            state: AppState::new(config.port, config.security_level),
+            config,
+            crypto_manager: CryptoManager::new(false).unwrap(),
+            identity_manager: identity.clone(),
+            message_db: MessageDB::new_in_memory().unwrap(),
+            seen_message_ids: HashSet::new(),
+            seen_message_order: VecDeque::new(),
+            persistent_history: false,
+            pending_network_messages: VecDeque::new(),
+        };
+        let mut message = NetworkMessage::connection_request(
+            "127.0.0.1:8080".into(), "session".into(), SecurityLevel::Tofu,
+        );
+        message.identity_key = Some(identity.get_public_key_base64());
+        message.identity_fingerprint = Some(identity.get_fingerprint());
+        message.identity_signature = Some(identity.sign(&message.signing_bytes().unwrap()));
+        let observed = "192.0.2.1:49152".parse().unwrap();
+        app.handle_network_event(NetworkEvent::MessageReceived(message.clone(), observed));
+        assert_eq!(app.state.incoming_connection.as_ref().unwrap().from_ip, observed.to_string());
+        assert!(app.validate_incoming(&message, observed).unwrap_err().contains("replayed"));
+    }
 
     #[test]
     fn parse_ipv4_without_port() {

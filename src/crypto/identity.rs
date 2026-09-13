@@ -1,6 +1,6 @@
 use super::session::write_secret;
 use base64::{engine::general_purpose, Engine as _};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -172,7 +172,7 @@ impl IdentityManager {
                 .map_err(|_| P2PError::SignatureError("Invalid signature bytes".to_string()))?,
         );
 
-        match verifying_key.verify(message, &signature) {
+        match verifying_key.verify_strict(message, &signature) {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }
