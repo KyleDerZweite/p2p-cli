@@ -12,7 +12,7 @@ On the same machine, use different listening ports and loopback addresses. On th
 
 Assigned interface addresses are only candidates. A global IPv6 address still needs host and router firewall permission. A private IPv4 address works only where the other peer has a route to that private network. Router port forwarding can stop working when DHCP changes the listener's LAN address; reserve that address in the router when needed.
 
-The application does not broadcast identities through mDNS or automatically change router configuration. Copyable invitations cover LAN use without that extra exposure. Automatic PCP/UPnP mapping can be considered later if manual forwarding becomes a practical blocker.
+The current release uses copyable invitations and does not broadcast identities through mDNS or change router configuration automatically. Direct IPv6 and existing or manual IPv4 forwarding are supported. Optional mDNS and consent-based PCP/UPnP mapping are planned separately and must not be treated as relay services.
 
 ## Diagnosing failures
 

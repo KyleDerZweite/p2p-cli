@@ -41,7 +41,11 @@ impl Invitation {
         if self.candidates.is_empty() || self.candidates.len() > 16 {
             return Err("Invitation must contain between 1 and 16 addresses".into());
         }
+        let mut seen = std::collections::HashSet::new();
         for addr in &self.candidates {
+            if !seen.insert(addr) {
+                return Err(format!("Invitation contains duplicate address: {addr}"));
+            }
             if addr.port() == 0 || addr.ip().is_unspecified() || addr.ip().is_multicast() {
                 return Err(format!("Invitation contains an unusable address: {addr}"));
             }

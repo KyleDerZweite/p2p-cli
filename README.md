@@ -1,6 +1,6 @@
 # P2P CLI
 
-Linux terminal chat between two people, with authenticated encryption and no third-party runtime service. One peer needs a reachable TCP port: on a LAN, through IPv6, or with manual IPv4 port forwarding. Some networks cannot connect directly.
+Linux terminal chat between two people, with authenticated encryption and no third-party runtime service. A conversation uses one persistent, bidirectional TCP connection between the two clients. Only one peer needs a reachable port. Connections work on a LAN, over direct IPv6, or through router-mapped IPv4; incompatible firewalls fail cleanly with diagnostics. There is no relay fallback.
 
 ## Install and chat
 

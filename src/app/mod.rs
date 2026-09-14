@@ -190,7 +190,7 @@ impl App {
     /// Handle network events from the network layer
     pub fn handle_network_event(&mut self, event: NetworkEvent) -> Result<(), String> {
         match event {
-            NetworkEvent::MessageReceived(mut message, addr) => {
+            NetworkEvent::MessageReceived(message, addr) => {
                 if let Err(reason) = self.validate_incoming(&message, addr) {
                     self.add_system_message(format!(
                         "Rejected unauthenticated protocol message: {}",
@@ -198,10 +198,7 @@ impl App {
                     ));
                     return Err(reason);
                 } else {
-                    // Preserve the signed envelope until validation completes. Replies
-                    // use the live socket, including inbound ephemeral ports.
-                    message.from_ip = addr.to_string();
-                    self.handle_network_message(message);
+                    self.handle_network_message(message, addr);
                 }
             }
             NetworkEvent::ConnectionEstablished(_addr) => {
@@ -1104,7 +1101,8 @@ impl App {
         }
     }
 
-    fn handle_network_message(&mut self, msg: NetworkMessage) {
+    fn handle_network_message(&mut self, msg: NetworkMessage, source: std::net::SocketAddr) {
+        let source_ip = source.to_string();
         match msg.msg_type {
             MessageType::ConnectionRequest => {
                 if let Some(public_key) = msg.public_key {
@@ -1116,7 +1114,7 @@ impl App {
                             (&msg.identity_key, &msg.identity_fingerprint)
                         {
                             let (status, is_local) =
-                                self.verify_peer_identity(id_key, fp, &msg.from_ip);
+                                self.verify_peer_identity(id_key, fp, &source_ip);
                             let alias = if status == IdentityStatus::Verified
                                 || status == IdentityStatus::LocalSelf
                             {
@@ -1137,12 +1135,12 @@ impl App {
                             (
                                 IdentityStatus::None,
                                 None,
-                                Self::is_localhost_ip(&msg.from_ip),
+                                Self::is_localhost_ip(&source_ip),
                             )
                         };
 
                     self.state.incoming_connection = Some(IncomingConnection {
-                        from_ip: msg.from_ip,
+                        from_ip: source_ip.clone(),
                         public_key,
                         security_level: peer_security_level,
                         expires_at: Instant::now() + std::time::Duration::from_secs(90),
@@ -1165,7 +1163,7 @@ impl App {
 
                     if let Ok(peer_id) = self.message_db.get_or_create_peer(
                         msg.identity_key.as_deref().expect("validated identity"),
-                        &msg.from_ip,
+                        &source_ip,
                     ) {
                         self.state.current_peer_id = Some(peer_id.clone());
                     }
@@ -1174,8 +1172,7 @@ impl App {
                     let (identity_status, is_localhost) = if let (Some(id_key), Some(fp)) =
                         (&msg.identity_key, &msg.identity_fingerprint)
                     {
-                        let (status, is_local) =
-                            self.verify_peer_identity(id_key, fp, &msg.from_ip);
+                        let (status, is_local) = self.verify_peer_identity(id_key, fp, &source_ip);
                         self.state.peer_identity_key = Some(id_key.clone());
                         self.state.peer_fingerprint = Some(fp.clone());
                         if status == IdentityStatus::LocalSelf {
@@ -1183,7 +1180,7 @@ impl App {
                         }
                         (status, is_local)
                     } else {
-                        (IdentityStatus::None, Self::is_localhost_ip(&msg.from_ip))
+                        (IdentityStatus::None, Self::is_localhost_ip(&source_ip))
                     };
                     self.state.identity_status = identity_status;
                     self.state.is_localhost = is_localhost;
