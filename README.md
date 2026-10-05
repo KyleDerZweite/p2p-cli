@@ -34,7 +34,7 @@ For internet connections, follow the [address and firewall guide](docs/linux.md)
 - [Usage](docs/usage.md): installation, controls, and delivery limits.
 - [Linux troubleshooting](docs/linux.md): diagnostics, logs, NAT, IPv6, and WireGuard.
 - [Security](SECURITY.md): authentication, trust policies, storage, and threat model.
-- [Design](docs/design.md), [domain glossary](docs/CONTEXT.md), and [planning](docs/PLANNING.md): implementation, decisions, and verification.
+- [Design](docs/design.md), [domain glossary](docs/GLOSSARY.md), and [planning](docs/PLANNING.md): implementation, decisions, and verification.
 - [v0.3 release notes](docs/releases/v0.3.md): compatibility and known issues. The published binary clips long diagnostics; `main` includes the display fix.
 
 [MIT license](LICENSE.md).
