@@ -16,3 +16,12 @@ Persistent history encrypts message bodies with AES-256-GCM. Linux uses XDG conf
 TOFU identifies previously accepted keys, not people. An address-only connection to a new key remains unverified; compare fingerprints before sending private text. A trusted invitation detects an unexpected endpoint key. The app cannot protect a compromised endpoint, terminal recording, IP/timing metadata, or an attacker exhausting network capacity. Local encryption does not protect history from someone who can read the storage key. Maximum mode does not erase earlier files. Local policy cannot control what the other person stores.
 
 The cryptographic implementation has not received an independent audit.
+
+## Dependency maintenance
+
+Dependabot checks Cargo dependencies and GitHub Actions weekly. Keep `Cargo.lock`
+committed and validate dependency updates with the locked checks in
+[the implementation plan](docs/PLANNING.md#release-gates). Maintainers can also run
+`cargo audit --deny warnings` with cargo-audit installed to check the lockfile
+against RustSec advisories, including unsoundness notices. A passing dependency
+audit does not establish that the protocol or cryptographic implementation is safe.
