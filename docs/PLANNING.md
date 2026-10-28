@@ -32,7 +32,13 @@ Mock router responses to test consent, lease bounds, renewal, cleanup, malformed
 
 ## Release gates
 
-Every phase preserves authenticated encryption, encrypted local history, bounded I/O, and actionable diagnostics. Arbitrary router pairs may remain unreachable. Run:
+Every phase preserves authenticated encryption, encrypted local history, bounded I/O, and actionable diagnostics. Arbitrary router pairs may remain unreachable.
+
+Use current stable Rust with the `rustfmt` and `clippy` components, a C compiler
+for bundled SQLite, and Python 3 for the Linux terminal tests. The Python test uses
+only the standard library and needs no pip packages. Run the checks from the
+repository root on Linux, with iproute2 installed for address discovery. CI uses
+the committed Cargo lockfile for Clippy, tests, and builds. Run:
 
 ```sh
 cargo fmt --check
@@ -44,3 +50,9 @@ cargo build --release --locked
 ```
 
 Compatibility ends at the old per-message transport because its routing and channel-authentication defects cannot be safely negotiated. Existing keys and encrypted history remain readable; random-session history is retained without automatic identity reassignment.
+
+Loopback and terminal checks do not establish reachability across real networks.
+Record remote-server/local-machine acceptance in
+[issue #1](https://github.com/KyleDerZweite/p2p-cli/issues/1). That acceptance and
+a patch release for the diagnostic-display fix remain separate from dependency
+maintenance. LAN discovery and automatic router mapping remain planned work.
